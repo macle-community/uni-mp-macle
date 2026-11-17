@@ -1,15 +1,30 @@
 'use strict';
 
 const path = require('path');
+const fs = require('fs');
+const fsExtra = require('@macle/fs-extra');
 const { transformWxmlToMaml } = require('./transformers/template');
 const { transformWxssToMass } = require('./transformers/style');
 const { transformJsToMacle } = require('./transformers/script');
 const { MacleReporter } = require('./reporter');
 const macleRules = require('./rules');
 
+function resolveMacleOutDir(forceMacleOutDir) {
+  if (process.env.UNI_CUSTOM_PLATFORM === 'mp-macle' || forceMacleOutDir) {
+    const mode = process.env.NODE_ENV === 'production' ? 'build' : 'dev';
+    const targetDir = process.env.UNI_OUTPUT_DIR
+      ? process.env.UNI_OUTPUT_DIR.replace(/mp-weixin([\\/]?)$/, 'mp-macle$1')
+      : path.resolve(process.cwd(), `dist/${mode}/mp-macle`);
+
+    process.env.UNI_OUTPUT_DIR = targetDir;
+    return targetDir;
+  }
+  return '';
+}
+
 function uniMaclePlugin(userOptions = {}) {
   let entryDir = process.cwd();
-  let resolvedOutDir = '';
+  let resolvedOutDir = resolveMacleOutDir(userOptions.forceMacleOutDir);
 
   const reporter = new MacleReporter(macleRules, {
     isAutoOpenReport: userOptions.isAutoOpenReport ?? true,
@@ -22,15 +37,10 @@ function uniMaclePlugin(userOptions = {}) {
     enforce: 'post',
 
     config() {
-      if (process.env.UNI_CUSTOM_PLATFORM === 'mp-macle' || userOptions.forceMacleOutDir) {
-        const mode = process.env.NODE_ENV === 'production' ? 'build' : 'dev';
-        const baseOut = process.env.UNI_OUTPUT_DIR
-          ? process.env.UNI_OUTPUT_DIR.replace(/mp-weixin$/, 'mp-macle')
-          : path.resolve(process.cwd(), `dist/${mode}/mp-macle`);
-
-        process.env.UNI_OUTPUT_DIR = baseOut;
+      const outDir = resolveMacleOutDir(userOptions.forceMacleOutDir);
+      if (outDir) {
         return {
-          build: { outDir: baseOut },
+          build: { outDir },
           define: {
             'process.env.UNI_CUSTOM_PLATFORM': JSON.stringify('mp-macle'),
           },
@@ -40,7 +50,7 @@ function uniMaclePlugin(userOptions = {}) {
 
     configResolved(config) {
       entryDir = process.env.UNI_INPUT_DIR || config.root || process.cwd();
-      resolvedOutDir = config.build.outDir;
+      resolvedOutDir = resolvedOutDir || config.build.outDir;
     },
 
     buildStart() {
@@ -101,9 +111,28 @@ function uniMaclePlugin(userOptions = {}) {
     },
 
     async closeBundle() {
-      if (resolvedOutDir) {
-        await reporter.writeReport(entryDir, resolvedOutDir);
+      if (!resolvedOutDir) return;
+
+      const leakedWeixinDir = resolvedOutDir.replace(/mp-macle([\\/]?)$/, 'mp-weixin$1');
+      const leakedStaticDir = path.join(leakedWeixinDir, 'static');
+      const targetStaticDir = path.join(resolvedOutDir, 'static');
+
+      if (leakedWeixinDir !== resolvedOutDir) {
+        if (fs.existsSync(leakedStaticDir)) {
+          fsExtra.copySync(leakedStaticDir, targetStaticDir, { overwrite: true });
+          fsExtra.removeSync(leakedStaticDir);
+          if (fs.readdirSync(leakedWeixinDir).length === 0) {
+            fs.rmdirSync(leakedWeixinDir);
+          }
+        }
+
+        const srcStaticDir = path.join(entryDir, 'static');
+        if (!fs.existsSync(targetStaticDir) && fs.existsSync(srcStaticDir)) {
+          fsExtra.copySync(srcStaticDir, targetStaticDir, { overwrite: true });
+        }
       }
+
+      await reporter.writeReport(entryDir, resolvedOutDir);
     },
   };
 }

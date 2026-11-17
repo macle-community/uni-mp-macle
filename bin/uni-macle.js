@@ -6,12 +6,14 @@ const path = require('path');
 
 const args = process.argv.slice(2);
 const isBuild = args.includes('build');
+const mode = isBuild ? 'build' : 'dev';
 const uniArgs = isBuild ? ['build', '-p', 'mp-weixin'] : ['-p', 'mp-weixin'];
 
 const env = {
   ...process.env,
   UNI_PLATFORM: 'mp-weixin',
   UNI_CUSTOM_PLATFORM: 'mp-macle',
+  UNI_OUTPUT_DIR: path.resolve(process.cwd(), `dist/${mode}/mp-macle`),
   NODE_ENV: isBuild ? 'production' : 'development',
 };
 
