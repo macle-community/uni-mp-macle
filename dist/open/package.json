@@ -1,0 +1,45 @@
+{
+  "name": "@macle/open",
+  "version": "9.1.90",
+  "description": "Open stuff like URLs, files, executables. Cross-platform.",
+  "license": "MIT",
+  "repository": "sindresorhus/open",
+  "engines": {
+    "node": ">=12"
+  },
+  "scripts": {},
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "xdg-open",
+    "define-lazy-prop/"
+  ],
+  "keywords": [
+    "app",
+    "open",
+    "opener",
+    "opens",
+    "launch",
+    "start",
+    "xdg-open",
+    "xdg",
+    "default",
+    "cmd",
+    "browser",
+    "editor",
+    "executable",
+    "exe",
+    "url",
+    "urls",
+    "arguments",
+    "args",
+    "spawn",
+    "exec",
+    "child",
+    "process",
+    "website",
+    "file"
+  ],
+  "dependencies": {},
+  "devDependencies": {}
+}

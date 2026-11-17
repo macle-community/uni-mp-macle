@@ -1,0 +1,28 @@
+{
+  "name": "@macle/fs-extra",
+  "version": "9.1.90",
+  "description": "Macle common utils",
+  "engines": {
+    "node": ">=14.14"
+  },
+  "repository": {
+    "type": "git"
+  },
+  "devDependencies": {},
+  "main": "./lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./esm": "./lib/esm.mjs"
+  },
+  "files": [
+    "lib/"
+  ],
+  "scripts": {
+    "lint": "standard",
+    "test-find": "find ./lib/**/__tests__ -name *.test.js | xargs mocha",
+    "test": "npm run lint && npm run unit && npm run unit-esm",
+    "unit": "nyc node test.js",
+    "unit-esm": "node test.mjs"
+  },
+  "sideEffects": false
+}

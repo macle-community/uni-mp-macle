@@ -1,0 +1,21 @@
+{
+  "name": "@macle/uni-mp",
+  "version": "1.0.0",
+  "description": "Direct Uni-App to Macle Mini Program compiler plugin & CLI",
+  "main": "src/index.js",
+  "bin": {
+    "uni-macle": "./bin/uni-macle.js"
+  },
+  "scripts": {
+    "extract-rules": "node scripts/extract-rules.js"
+  },
+  "dependencies": {
+    "@babel/core": "^7.24.0",
+    "@macle/fs-extra": "file:dist/fs-extra",
+    "@macle/open": "file:dist/open",
+    "htmlparser2": "^9.1.0"
+  },
+  "peerDependencies": {
+    "vite": ">=3.0.0"
+  }
+}
