@@ -10,7 +10,14 @@
   "categories": [
     "Other"
   ],
-  "main": "./extension.js",
+  "main": "./lib/extension.js",
+  "files": [
+    "lib/"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepare": "npm run build"
+  },
   "activationEvents": [
     "onCommand:macle.initProject",
     "onCommand:macle.buildDev",

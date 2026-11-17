@@ -1,6 +1,4 @@
-'use strict';
-
-function transformWxmlToMaml(code = '') {
+export function transformWxmlToMaml(code: unknown = ''): string {
   if (typeof code !== 'string') return '';
 
   let result = '';
@@ -36,14 +34,14 @@ function transformWxmlToMaml(code = '') {
         break;
       }
 
-      let tag = code.slice(index, end + 1);
-      tag = tag
+      const tag = code
+        .slice(index, end + 1)
         .replace(/\bwx:([a-zA-Z0-9_-]+)/g, 'ma:$1')
         .replace(/\bwx-([a-zA-Z0-9_-]+)\b/g, 'ma-$1')
-        .replace(/\.wxml(?=(?:["']))/g, '.maml')
+        .replace(/\.wxml(?=["'])/g, '.maml')
         .replace(/<wxs\b/gi, '<sjs')
         .replace(/<\/wxs\s*>/gi, '</sjs>')
-        .replace(/\.wxs(?=(?:["']))/g, '.sjs');
+        .replace(/\.wxs(?=["'])/g, '.sjs');
 
       result += tag;
       index = end + 1;
@@ -63,5 +61,3 @@ function transformWxmlToMaml(code = '') {
 
   return result;
 }
-
-module.exports = { transformWxmlToMaml };

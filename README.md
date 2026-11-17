@@ -8,8 +8,9 @@ Install the plugin in your uni-app project:
 
 ```bash
 npm install -D @macle/uni-mp
-
 ```
+
+The TypeScript sources in `src/`, `scripts/`, and `hbuilderx-plugin/` compile to CommonJS JavaScript with `npm run build`. The main package outputs JavaScript and declaration files to `lib/`; packaging either package runs its build automatically.
 
 Register it in `vite.config.js`:
 

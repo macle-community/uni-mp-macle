@@ -1,15 +1,24 @@
-'use strict';
+import fs = require('fs');
+import path = require('path');
+import fsExtra = require('@macle/fs-extra');
+import type { Plugin } from 'vite';
+import { transformWxmlToMaml } from './transformers/template';
+import { transformWxssToMass } from './transformers/style';
+import { transformJsToMacle } from './transformers/script';
+import { MacleReporter } from './reporter';
+import { apis, components, globalconfig, pageconfig } from './rules';
+import type { RuleSet } from './types';
 
-const path = require('path');
-const fs = require('fs');
-const fsExtra = require('@macle/fs-extra');
-const { transformWxmlToMaml } = require('./transformers/template');
-const { transformWxssToMass } = require('./transformers/style');
-const { transformJsToMacle } = require('./transformers/script');
-const { MacleReporter } = require('./reporter');
-const macleRules = require('./rules');
+interface MaclePluginOptions {
+  forceMacleOutDir?: boolean;
+  isAutoOpenReport?: boolean;
+  lan?: string;
+  viewTemplateDir?: string;
+}
 
-function resolveMacleOutDir(forceMacleOutDir) {
+const macleRules: RuleSet = { apis, components, globalconfig, pageconfig };
+
+function resolveMacleOutDir(forceMacleOutDir = false): string {
   if (process.env.UNI_CUSTOM_PLATFORM === 'mp-macle' || forceMacleOutDir) {
     const mode = process.env.NODE_ENV === 'production' ? 'build' : 'dev';
     const targetDir = process.env.UNI_OUTPUT_DIR
@@ -22,7 +31,7 @@ function resolveMacleOutDir(forceMacleOutDir) {
   return '';
 }
 
-function uniMaclePlugin(userOptions = {}) {
+function uniMaclePlugin(userOptions: MaclePluginOptions = {}): Plugin {
   let entryDir = process.cwd();
   let resolvedOutDir = resolveMacleOutDir(userOptions.forceMacleOutDir);
 
@@ -32,7 +41,7 @@ function uniMaclePlugin(userOptions = {}) {
     viewTemplateDir: userOptions.viewTemplateDir,
   });
 
-  return {
+  const plugin: Plugin = {
     name: 'vite:uni-mp-macle',
     enforce: 'post',
 
@@ -46,6 +55,7 @@ function uniMaclePlugin(userOptions = {}) {
           },
         };
       }
+      return undefined;
     },
 
     configResolved(config) {
@@ -57,9 +67,9 @@ function uniMaclePlugin(userOptions = {}) {
       reporter.reset();
     },
 
-    generateBundle(outputOptions, bundle) {
+    generateBundle(_outputOptions, bundle) {
       for (const [fileName, assetOrChunk] of Object.entries(bundle)) {
-        if (fileName.endsWith('.wxml')) {
+        if (fileName.endsWith('.wxml') && 'source' in assetOrChunk) {
           const rawWxml = String(assetOrChunk.source);
           reporter.recordTemplate(fileName, rawWxml);
 
@@ -68,7 +78,7 @@ function uniMaclePlugin(userOptions = {}) {
           assetOrChunk.source = transformWxmlToMaml(rawWxml);
           bundle[newFileName] = assetOrChunk;
           delete bundle[fileName];
-        } else if (fileName.endsWith('.wxss')) {
+        } else if (fileName.endsWith('.wxss') && 'source' in assetOrChunk) {
           reporter.recordStyle(fileName);
 
           const newFileName = fileName.replace(/\.wxss$/, '.mass');
@@ -82,7 +92,8 @@ function uniMaclePlugin(userOptions = {}) {
           bundle[newFileName] = assetOrChunk;
           delete bundle[fileName];
         } else if (fileName.endsWith('.js')) {
-          const rawJs = assetOrChunk.type === 'chunk' ? assetOrChunk.code : String(assetOrChunk.source);
+          const rawJs =
+            assetOrChunk.type === 'chunk' ? assetOrChunk.code : String(assetOrChunk.source);
           const { code, calledApis } = transformJsToMacle(rawJs, fileName);
 
           if (!fileName.includes('common/vendor.js')) {
@@ -94,15 +105,24 @@ function uniMaclePlugin(userOptions = {}) {
           } else {
             assetOrChunk.source = code;
           }
-        } else if (fileName === 'project.config.json') {
+        } else if (fileName === 'project.config.json' && 'source' in assetOrChunk) {
           try {
-            const cfg = JSON.parse(String(assetOrChunk.source));
-            cfg.setting = cfg.setting || {};
-            cfg.setting.es5 = true;
-            delete cfg.setting.es6;
-            assetOrChunk.source = JSON.stringify(cfg, null, 2);
-          } catch {}
-        } else if (fileName.endsWith('.json')) {
+            const cfg: unknown = JSON.parse(String(assetOrChunk.source));
+            if (cfg && typeof cfg === 'object' && !Array.isArray(cfg)) {
+              const projectConfig = cfg as Record<string, unknown>;
+              const setting =
+                projectConfig.setting && typeof projectConfig.setting === 'object'
+                  ? (projectConfig.setting as Record<string, unknown>)
+                  : {};
+              setting.es5 = true;
+              delete setting.es6;
+              projectConfig.setting = setting;
+              assetOrChunk.source = JSON.stringify(projectConfig, null, 2);
+            }
+          } catch {
+            // Keep malformed project configuration unchanged.
+          }
+        } else if (fileName.endsWith('.json') && 'source' in assetOrChunk) {
           const rawJson = String(assetOrChunk.source).replace(/"subpackages"\s*:/g, '"subPackages":');
           reporter.recordJson(fileName, rawJson);
           assetOrChunk.source = rawJson;
@@ -135,6 +155,8 @@ function uniMaclePlugin(userOptions = {}) {
       await reporter.writeReport(entryDir, resolvedOutDir);
     },
   };
+
+  return plugin;
 }
 
-module.exports = uniMaclePlugin;
+export = uniMaclePlugin;

@@ -2,12 +2,21 @@
   "name": "@macle/uni-mp",
   "version": "1.0.0",
   "description": "Direct Uni-App to Macle Mini Program compiler plugin & CLI",
-  "main": "src/index.js",
+  "files": [
+    "dist/",
+    "lib/"
+  ],
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
   "bin": {
     "uni-macle": "./bin/uni-macle.js"
   },
   "scripts": {
-    "extract-rules": "node scripts/extract-rules.js"
+    "build": "tsc -p tsconfig.json && npm run build:scripts && npm run build:hbuilderx",
+    "build:hbuilderx": "npm --prefix hbuilderx-plugin run build",
+    "build:scripts": "tsc -p tsconfig.scripts.json",
+    "extract-rules": "npm run build:scripts && node scripts/lib/extract-rules.js",
+    "prepare": "npm run build"
   },
   "dependencies": {
     "@babel/core": "^7.24.0",
@@ -17,5 +26,10 @@
   },
   "peerDependencies": {
     "vite": ">=3.0.0"
+  },
+  "devDependencies": {
+    "@types/babel__core": "^7.20.5",
+    "@types/node": "^26.6.6",
+    "typescript": "^7.0.2"
   }
 }

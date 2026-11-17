@@ -1,16 +1,14 @@
-// Auto-generated from original index.js by scripts/extract-rules.js
-'use strict';
+// Auto-generated from original index.js by scripts/extract-rules.ts
+import type { Rule } from './types';
 
-const { outputJsonSync } = require("@macle/fs-extra/esm");
-
-const API_RENAME_MAP = {
+export const API_RENAME_MAP: Record<string, string> = {
   "login": "getAuthCode",
   "getUserProfile": "getOpenUserInfo"
 };
 
-const PARAM_RENAME_MAP = {};
+export const PARAM_RENAME_MAP: Record<string, Record<string, string>> = {};
 
-const CONTEXT_MANAGERS = {
+export const CONTEXT_MANAGERS: Record<string, string> = {
   getRecorderManager: 'RecorderManager',
   getFileSystemManager: 'FileSystemManager',
   downloadFile: 'DownloadTask',
@@ -22,7 +20,7 @@ const CONTEXT_MANAGERS = {
   getUpdateManager: 'UpdateManager',
 };
 
-const apis = {
+export const apis = {
   "canIUse": {
     "status": 0,
     "desc": "判断小程序的 API，回调，参数，组件等是否在当前版本可用",
@@ -76,7 +74,7 @@ const apis = {
             "type": 0,
             "desc": "允许微信使用相册的开关（仅 iOS 有效）"
           },
-            "cameraAuthorized": {
+          "cameraAuthorized": {
             "type": 0,
             "desc": "允许微信使用摄像头的开关"
           },
@@ -4275,9 +4273,9 @@ const apis = {
     },
     "body": {}
   }
-};
+} as Record<string, Rule>;
 
-const components = {
+export const components = {
   "swiper": {
     "status": 1,
     "name": "滑块视图容器",
@@ -5118,9 +5116,9 @@ const components = {
     },
     "desc": "会自动铺满整个小程序页面，个人类型的小程序暂不支持使用。客户端 6.7.2 版本开始，navigationStyle: custom 对 web-view 组件无效"
   }
-};
+} as Record<string, Rule>;
 
-const globalconfig = {
+export const globalconfig = {
   "pages": {
     "url": {
       "original": "https://developers.weixin.qq.com/miniprogram/dev/reference/configuration/app.html#pages",
@@ -5399,9 +5397,9 @@ const globalconfig = {
     },
     "desc": "指明 sitemap.json 的位置"
   }
-};
+} as Record<string, Rule>;
 
-const pageconfig = {
+export const pageconfig = {
   "navigationBarBackgroundColor": {
     "type": 7,
     "status": 0,
@@ -5528,14 +5526,4 @@ const pageconfig = {
     },
     "desc": "禁止页面右滑手势返回"
   }
-};
-
-module.exports = {
-  API_RENAME_MAP,
-  PARAM_RENAME_MAP,
-  CONTEXT_MANAGERS,
-  apis,
-  components,
-  globalconfig,
-  pageconfig,
-};
+} as Record<string, Rule>;
