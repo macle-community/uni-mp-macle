@@ -1,0 +1,62 @@
+{
+  "ifdef-macle": {
+    "prefix": "ifdef-macle",
+    "scope": "javascript,typescript,vue",
+    "body": [
+      "// #ifdef MP-MACLE",
+      "$1",
+      "// #endif"
+    ],
+    "description": "Code compiled only for the Macle mini-program platform"
+  },
+  "ifndef-macle": {
+    "prefix": "ifndef-macle",
+    "scope": "javascript,typescript,vue",
+    "body": [
+      "// #ifndef MP-MACLE",
+      "$1",
+      "// #endif"
+    ],
+    "description": "Code excluded from the Macle mini-program platform"
+  },
+  "ifdef-macle-template": {
+    "prefix": "ifdef-macle",
+    "scope": "vue,html",
+    "body": [
+      "<!-- #ifdef MP-MACLE -->",
+      "$1",
+      "<!-- #endif -->"
+    ],
+    "description": "Template markup compiled only for Macle"
+  },
+  "ifndef-macle-template": {
+    "prefix": "ifndef-macle",
+    "scope": "vue,html",
+    "body": [
+      "<!-- #ifndef MP-MACLE -->",
+      "$1",
+      "<!-- #endif -->"
+    ],
+    "description": "Template markup excluded from Macle"
+  },
+  "ifdef-macle-style": {
+    "prefix": "ifdef-macle-style",
+    "scope": "css,scss,less,vue",
+    "body": [
+      "/* #ifdef MP-MACLE */",
+      "$1",
+      "/* #endif */"
+    ],
+    "description": "Styles compiled only for Macle"
+  },
+  "ifndef-macle-style": {
+    "prefix": "ifndef-macle-style",
+    "scope": "css,scss,less,vue",
+    "body": [
+      "/* #ifndef MP-MACLE */",
+      "$1",
+      "/* #endif */"
+    ],
+    "description": "Styles excluded from Macle"
+  }
+}

@@ -12,9 +12,10 @@
     "uni-macle": "./bin/uni-macle.js"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && npm run build:scripts && npm run build:hbuilderx",
+    "build": "tsc -p tsconfig.json && npm run build:scripts && npm run build:hbuilderx && npm run build:vscode",
     "build:hbuilderx": "npm --prefix hbuilderx-plugin run build",
     "build:scripts": "tsc -p tsconfig.scripts.json",
+    "build:vscode": "tsc -p vscode-macle-uni-mp/tsconfig.json && node scripts/build-vscode.mjs",
     "extract-rules": "npm run build:scripts && node scripts/lib/extract-rules.js",
     "prepare": "npm run build"
   },
@@ -28,8 +29,11 @@
     "vite": ">=3.0.0"
   },
   "devDependencies": {
+    "@jridgewell/trace-mapping": "^0.3.31",
     "@types/babel__core": "^7.20.5",
     "@types/node": "^26.6.6",
+    "@types/vscode": "^1.146.0",
+    "esbuild": "^0.28.2",
     "typescript": "^7.0.2"
   }
 }

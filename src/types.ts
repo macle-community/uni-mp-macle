@@ -38,6 +38,7 @@ export interface RuleSet {
 
 export interface CalledApi {
   props: string[];
+  lines?: number[];
 }
 
 export type CalledApis = Record<string, CalledApi>;

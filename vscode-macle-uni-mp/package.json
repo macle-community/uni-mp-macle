@@ -1,0 +1,99 @@
+{
+  "name": "vscode-macle-uni-mp",
+  "displayName": "Macle Mini Program Tools for uni-app",
+  "description": "Compile uni-app projects for Macle, inspect compatibility issues, and preview builds in Macle DevTools.",
+  "version": "1.0.0",
+  "publisher": "macle-community",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Other",
+    "Programming Languages"
+  ],
+  "main": "./lib/extension.js",
+  "files": [
+    "lib/**",
+    "snippets/**",
+    "README.md"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onLanguage:vue",
+    "onLanguage:javascript",
+    "onLanguage:typescript",
+    "onCommand:macle.compileAndPreview",
+    "onCommand:macle.compileDev",
+    "onCommand:macle.openCompatibilityReport",
+    "onCommand:macle.configureMauiLibrary"
+  ],
+  "extensionPack": [
+    "Vue.volar",
+    "uni-helper.uni-app-schemas-vscode"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "macle.compileAndPreview",
+        "title": "Macle: Compile & Preview in Macle",
+        "category": "Macle"
+      },
+      {
+        "command": "macle.compileDev",
+        "title": "Macle: Compile uni-app for Macle",
+        "category": "Macle"
+      },
+      {
+        "command": "macle.openCompatibilityReport",
+        "title": "Macle: Open Compatibility Report",
+        "category": "Macle"
+      },
+      {
+        "command": "macle.configureMauiLibrary",
+        "title": "Macle: Configure MAUI UI Library",
+        "category": "Macle"
+      }
+    ],
+    "configuration": {
+      "title": "Macle",
+      "properties": {
+        "macle.maui.targetFolder": {
+          "type": "string",
+          "default": "maui-components",
+          "description": "Project-relative folder where the selected MAUI dist files are copied."
+        }
+      }
+    },
+    "snippets": [
+      {
+        "language": "javascript",
+        "path": "./snippets/macle.code-snippets"
+      },
+      {
+        "language": "typescript",
+        "path": "./snippets/macle.code-snippets"
+      },
+      {
+        "language": "vue",
+        "path": "./snippets/macle.code-snippets"
+      },
+      {
+        "language": "html",
+        "path": "./snippets/macle.code-snippets"
+      },
+      {
+        "language": "css",
+        "path": "./snippets/macle.code-snippets"
+      },
+      {
+        "language": "scss",
+        "path": "./snippets/macle.code-snippets"
+      },
+      {
+        "language": "less",
+        "path": "./snippets/macle.code-snippets"
+      }
+    ]
+  }
+}

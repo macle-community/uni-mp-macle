@@ -13,6 +13,7 @@ interface MaclePluginOptions {
   forceMacleOutDir?: boolean;
   isAutoOpenReport?: boolean;
   lan?: string;
+  sourceMaps?: boolean;
   viewTemplateDir?: string;
 }
 
@@ -49,7 +50,12 @@ function uniMaclePlugin(userOptions: MaclePluginOptions = {}): Plugin {
       const outDir = resolveMacleOutDir(userOptions.forceMacleOutDir);
       if (outDir) {
         return {
-          build: { outDir },
+          build: {
+            outDir,
+            ...(userOptions.sourceMaps || process.env.UNI_MACLE_SOURCE_MAPS === 'true'
+              ? { sourcemap: true }
+              : {}),
+          },
           define: {
             'process.env.UNI_CUSTOM_PLATFORM': JSON.stringify('mp-macle'),
           },

@@ -38,6 +38,7 @@ function transformJsToMacle(code: unknown, filename = 'unknown.js'): { code: str
             if (!isMemberExpression(member) || !isIdentifier(member.object)) return;
 
             const objName = member.object.name;
+            const sourceLine = astPath.node.loc?.start.line;
             let propName: string | undefined;
             if (isIdentifier(member.property) && !member.computed) {
               propName = member.property.name;
@@ -77,12 +78,18 @@ function transformJsToMacle(code: unknown, filename = 'unknown.js'): { code: str
 
             if (managerPrefix) {
               const fullApiName = `${managerPrefix}.${propName}`;
-              calledApis[fullApiName] = calledApis[fullApiName] || { props: [] };
+              calledApis[fullApiName] = calledApis[fullApiName] || { props: [], lines: [] };
+              if (sourceLine && !calledApis[fullApiName].lines?.includes(sourceLine)) {
+                calledApis[fullApiName].lines?.push(sourceLine);
+              }
               return;
             }
 
             if (objName !== 'wx' || astPath.scope.hasBinding('wx')) return;
-            calledApis[propName] = calledApis[propName] || { props: [] };
+            calledApis[propName] = calledApis[propName] || { props: [], lines: [] };
+            if (sourceLine && !calledApis[propName].lines?.includes(sourceLine)) {
+              calledApis[propName].lines?.push(sourceLine);
+            }
 
             const paramRules = PARAM_RENAME_MAP[propName];
             const options = args[0];

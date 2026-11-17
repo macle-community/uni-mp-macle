@@ -3,6 +3,7 @@ import path = require('path');
 import fsExtra = require('@macle/fs-extra');
 import open = require('@macle/open');
 import { Parser } from 'htmlparser2';
+import { getMacleComponentDocUrl } from './component-docs';
 import type { CalledApis, Rule, RuleSet, TransformRecord } from './types';
 
 interface ReporterOptions {
@@ -53,6 +54,7 @@ class MacleReporter {
   private readonly viewTemplateDir: string;
   private hasOpenedBrowser = false;
   private transforms: Record<string, TransformRecord> = {};
+  private apisLineMap: Record<string, Record<string, number[]>> = {};
   private fileNum = 0;
   private projectName = '';
 
@@ -68,6 +70,7 @@ class MacleReporter {
 
   reset(): void {
     this.transforms = {};
+    this.apisLineMap = {};
     this.fileNum = 0;
     this.projectName = '';
   }
@@ -86,7 +89,7 @@ class MacleReporter {
           const compEntry: ReportComponent = {
             name: tagName,
             attrs: [],
-            doc: getRuleDoc(rule),
+            doc: getMacleComponentDocUrl(tagName),
           };
 
           if (rule.status === 2) {
@@ -126,6 +129,11 @@ class MacleReporter {
     const apiRules = this.rules.apis || {};
 
     for (const [apiName, callInfo] of Object.entries(calledApis)) {
+      if (callInfo.lines?.length) {
+        this.apisLineMap[fileName] = this.apisLineMap[fileName] || {};
+        this.apisLineMap[fileName][apiName] = callInfo.lines;
+      }
+
       const rule = apiRules[apiName];
       const entry: ReportComponent = { name: `wx.${apiName}`, attrs: [], doc: getRuleDoc(rule) };
 
@@ -245,7 +253,7 @@ class MacleReporter {
 
     const reportPayload = {
       transforms: this.transforms,
-      apisLineMap: {},
+      apisLineMap: this.apisLineMap,
       tableInfo: {
         项目名称: this.projectName || path.basename(entryDir),
         项目路径: entryDir,
