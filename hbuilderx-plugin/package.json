@@ -1,0 +1,76 @@
+{
+  "id": "macle-uni-mp-tools",
+  "name": "Macle MiniProgram Tools for uni-app",
+  "version": "1.0.0",
+  "description": "Compile and run uni-app projects directly as Macle Mini Programs (.maml, .mass, .sjs, ma.*)",
+  "publisher": "macle-community",
+  "engines": {
+    "HBuilderX": "^3.6.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./extension.js",
+  "activationEvents": [
+    "onCommand:macle.initProject",
+    "onCommand:macle.buildDev",
+    "onCommand:macle.buildProd",
+    "onCommand:macle.openReport"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "macle.initProject",
+        "title": "Macle: Configure uni-app Project for Macle"
+      },
+      {
+        "command": "macle.buildDev",
+        "title": "Macle: Run Dev Watch Build (mp-macle)"
+      },
+      {
+        "command": "macle.buildProd",
+        "title": "Macle: Publish Production Build (mp-macle)"
+      },
+      {
+        "command": "macle.openReport",
+        "title": "Macle: Open Compatibility Report"
+      }
+    ],
+    "menus": {
+      "menubar/run": [
+        {
+          "command": "macle.buildDev",
+          "group": "run_custom@1",
+          "when": "workspaceFolderCount > 0"
+        },
+        {
+          "command": "macle.buildProd",
+          "group": "run_custom@2",
+          "when": "workspaceFolderCount > 0"
+        },
+        {
+          "command": "macle.initProject",
+          "group": "run_custom@3",
+          "when": "workspaceFolderCount > 0"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "macle.initProject",
+          "group": "z_commands@1",
+          "when": "explorerResourceIsFolder"
+        },
+        {
+          "command": "macle.buildDev",
+          "group": "z_commands@2",
+          "when": "explorerResourceIsFolder"
+        },
+        {
+          "command": "macle.openReport",
+          "group": "z_commands@3",
+          "when": "explorerResourceIsFolder"
+        }
+      ]
+    }
+  }
+}
