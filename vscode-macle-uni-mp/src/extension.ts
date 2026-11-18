@@ -1,5 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
+import https from 'node:https';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import * as vscode from 'vscode';
 import { codeActionProvider, updateDiagnostics } from './diagnostics';
@@ -10,11 +12,375 @@ import { createMauiLibraryPlan, installMauiLibrary } from './maui-library';
 import { MacleActivityProvider } from './activity';
 import { resolveUniCli } from './uni-cli';
 
-const officialToolsExtensionId = 'MacleTeam.macle-miniprogram-tools';
-const officialSimulatorCommand = 'MiniProgram.commands.tools.simulator.openInStandAlone';
 const outputChannel = vscode.window.createOutputChannel('Macle uni-app');
 
 let buildProcess: ChildProcess | undefined;
+let toolkitInstallPromise: Promise<{ toolkitRoot: string; simulatorInstalled: boolean }> | undefined;
+
+interface ZipExtractor {
+  zip: {
+    uncompress(source: string, destination: string): Promise<void>;
+  };
+}
+
+interface ToolkitConfig {
+  download: { url: string; fileName: string; timeoutMs: number; redirectLimit: number };
+  toolkit: {
+    version: string;
+    storageFolder: string;
+    contentsFolder: string;
+    uiFolder: string;
+    compilerFolder: string;
+    simulatorFolder: string;
+  };
+  archives: {
+    ui: string;
+    compiler: string;
+    simulator: string;
+    platformPrefix: string;
+    platformSuffix: string;
+  };
+  officialExtension: {
+    id: string;
+    simulatorCommand: string;
+    relativeSimulatorDirectory: string[];
+    zipExtractorModule: string;
+  };
+  platforms: {
+    darwin: {
+      archiveLabel: string;
+      simulatorDirectory: string;
+      appName: string;
+      executableRelativePath: string[];
+    };
+    win32: {
+      archiveLabel: string;
+      simulatorDirectory: string;
+      executableName: string;
+    };
+  };
+}
+
+let toolkitConfig: ToolkitConfig | undefined;
+
+function toolkitConfigPath(context: vscode.ExtensionContext): string {
+  const override = vscode.workspace
+    .getConfiguration('macle.toolkit')
+    .get<string>('configFile', '')
+    .trim();
+  if (override) {
+    return path.isAbsolute(override)
+      ? override
+      : path.resolve(context.extensionPath, override);
+  }
+  return path.join(context.extensionPath, 'media', 'toolkit-config.json');
+}
+
+function loadToolkitConfig(context: vscode.ExtensionContext): ToolkitConfig {
+  if (toolkitConfig) return toolkitConfig;
+  const configPath = toolkitConfigPath(context);
+  const parsed = JSON.parse(fs.readFileSync(configPath, 'utf8')) as ToolkitConfig;
+  toolkitConfig = parsed;
+  return parsed;
+}
+
+function downloadToolkitFile(
+  url: URL,
+  destination: string,
+  progress: vscode.Progress<{ message?: string; increment?: number }>,
+  state: { received: number; reportedPercent: number },
+  redirects = 0
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const config = toolkitConfig;
+    if (!config) {
+      reject(new Error('The toolkit configuration was not loaded.'));
+      return;
+    }
+    if (redirects > config.download.redirectLimit) {
+      reject(new Error('The toolkit download exceeded the redirect limit.'));
+      return;
+    }
+
+    const request = https.get(url, (response) => {
+      const status = response.statusCode ?? 0;
+      if ([301, 302, 303, 307, 308].includes(status)) {
+        response.resume();
+        const location = response.headers.location;
+        if (!location) {
+          reject(new Error(`The toolkit server returned HTTP ${status} without a redirect URL.`));
+          return;
+        }
+        const redirectUrl = new URL(location, url);
+        if (redirectUrl.protocol !== 'https:') {
+          reject(new Error('The toolkit server redirected to a non-HTTPS URL.'));
+          return;
+        }
+        void downloadToolkitFile(redirectUrl, destination, progress, state, redirects + 1).then(
+          resolve,
+          reject
+        );
+        return;
+      }
+      if (status !== 200) {
+        response.resume();
+        reject(new Error(`The toolkit server returned HTTP ${status}.`));
+        return;
+      }
+
+      const total = Number(response.headers['content-length']);
+      const output = fs.createWriteStream(destination);
+      response.on('data', (chunk: Buffer) => {
+        state.received += chunk.length;
+        const receivedMb = (state.received / (1024 * 1024)).toFixed(1);
+        if (Number.isFinite(total) && total > 0) {
+          const percent = Math.floor((state.received / total) * 100);
+          progress.report({
+            message: `${percent}% (${receivedMb} MB)`,
+            increment: Math.max(0, percent - state.reportedPercent),
+          });
+          state.reportedPercent = Math.max(state.reportedPercent, percent);
+        } else {
+          progress.report({ message: `${receivedMb} MB` });
+        }
+      });
+      response.on('error', reject);
+      response.on('aborted', () => reject(new Error('The toolkit download was interrupted.')));
+      output.on('error', reject);
+      output.on('finish', () => {
+        output.close((error) => (error ? reject(error) : resolve()));
+      });
+      response.pipe(output);
+    });
+    request.setTimeout(
+      config.download.timeoutMs,
+      () => request.destroy(new Error('The toolkit download timed out.'))
+    );
+    request.on('error', reject);
+  });
+}
+
+function getZipExtractor(context: vscode.ExtensionContext): ZipExtractor {
+  const config = loadToolkitConfig(context);
+  const extension = vscode.extensions.getExtension(config.officialExtension.id);
+  if (!extension) throw new Error('The required Macle MiniProgram Tools extension is not installed.');
+  const extensionRequire = createRequire(path.join(extension.extensionPath, 'package.json'));
+  return extensionRequire(config.officialExtension.zipExtractorModule) as ZipExtractor;
+}
+
+async function extractZip(
+  context: vscode.ExtensionContext,
+  source: string,
+  destination: string
+): Promise<void> {
+  await fs.promises.mkdir(destination, { recursive: true });
+  await getZipExtractor(context).zip.uncompress(source, destination);
+}
+
+async function extractZipIfNeeded(
+  context: vscode.ExtensionContext,
+  source: string,
+  destination: string,
+  archiveName: string
+): Promise<void> {
+  const marker = path.join(destination, '.macle-toolkit-archive');
+  try {
+    if ((await fs.promises.readFile(marker, 'utf8')) === archiveName) return;
+  } catch {
+    // Extract into a clean staging directory when the completion marker is absent.
+  }
+
+  const stagingPath = `${destination}.staging`;
+  await fs.promises.rm(stagingPath, { recursive: true, force: true });
+  await fs.promises.mkdir(stagingPath, { recursive: true });
+  try {
+    await extractZip(context, source, stagingPath);
+    await fs.promises.writeFile(path.join(stagingPath, '.macle-toolkit-archive'), archiveName);
+    await fs.promises.rm(destination, { recursive: true, force: true });
+    await fs.promises.rename(stagingPath, destination);
+  } catch (error) {
+    await fs.promises.rm(stagingPath, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+async function findNamedEntry(
+  root: string,
+  name: string,
+  entryType: 'file' | 'directory'
+): Promise<string | undefined> {
+  const pending = [root];
+  while (pending.length > 0) {
+    const current = pending.pop()!;
+    const entries = await fs.promises.readdir(current, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(current, entry.name);
+      if (entry.name === name && (entryType === 'file' ? entry.isFile() : entry.isDirectory())) {
+        return fullPath;
+      }
+      if (entry.isDirectory()) pending.push(fullPath);
+    }
+  }
+  return undefined;
+}
+
+async function installPlatformSimulator(
+  context: vscode.ExtensionContext,
+  toolkitRoot: string,
+  simulatorDirectory: string
+): Promise<boolean> {
+  const config = loadToolkitConfig(context);
+  const extension = vscode.extensions.getExtension(config.officialExtension.id);
+  if (!extension) throw new Error('The required Macle MiniProgram Tools extension is not installed.');
+
+  const platform = process.platform;
+  if (platform !== 'darwin' && platform !== 'win32') {
+    outputChannel.appendLine(`No Macle simulator package is available for ${platform}.`);
+    return false;
+  }
+
+  const platformConfig = platform === 'darwin'
+    ? config.platforms.darwin
+    : config.platforms.win32;
+  const platformArchiveName = `${config.archives.platformPrefix}_${platformConfig.archiveLabel}${config.archives.platformSuffix}`;
+  const platformArchive = await findNamedEntry(simulatorDirectory, platformArchiveName, 'file');
+  if (!platformArchive) throw new Error(`The simulator package is missing ${platformArchiveName}.`);
+
+  const officialSimulatorDirectory = path.join(
+    extension.extensionPath,
+    ...config.officialExtension.relativeSimulatorDirectory,
+    platformConfig.simulatorDirectory
+  );
+  const installMarker = path.join(officialSimulatorDirectory, '.macle-toolkit-version');
+  const expectedExecutable =
+    platform === 'darwin'
+      ? path.join(
+          officialSimulatorDirectory,
+          config.platforms.darwin.appName,
+          ...config.platforms.darwin.executableRelativePath
+        )
+      : path.join(officialSimulatorDirectory, config.platforms.win32.executableName);
+  try {
+    if ((await fs.promises.readFile(installMarker, 'utf8')) === platformArchiveName) {
+      await fs.promises.access(expectedExecutable);
+      return true;
+    }
+  } catch {
+    // Install or repair the simulator when its marker or executable is missing.
+  }
+
+  const extractedPlatform = path.join(toolkitRoot, `simulator-${platform}-staging`);
+  await fs.promises.rm(extractedPlatform, { recursive: true, force: true });
+  await extractZip(context, platformArchive, extractedPlatform);
+
+  let simulatorSource: string;
+  if (platform === 'darwin') {
+    simulatorSource =
+      (await findNamedEntry(extractedPlatform, config.platforms.darwin.appName, 'directory')) ?? '';
+    if (!simulatorSource) throw new Error(`The Mac simulator archive does not contain ${config.platforms.darwin.appName}.`);
+    await fs.promises.access(
+      path.join(simulatorSource, ...config.platforms.darwin.executableRelativePath)
+    );
+  } else {
+    simulatorSource =
+      (await findNamedEntry(extractedPlatform, config.platforms.win32.executableName, 'file')) ?? '';
+    if (!simulatorSource) throw new Error(`The Windows simulator archive does not contain ${config.platforms.win32.executableName}.`);
+  }
+
+  await fs.promises.mkdir(officialSimulatorDirectory, { recursive: true });
+  if (platform === 'darwin') {
+    const destinationApp = path.join(officialSimulatorDirectory, config.platforms.darwin.appName);
+    await fs.promises.rm(destinationApp, { recursive: true, force: true });
+    await fs.promises.cp(simulatorSource, destinationApp, { recursive: true });
+    await fs.promises.chmod(
+      path.join(destinationApp, ...config.platforms.darwin.executableRelativePath),
+      0o755
+    );
+  } else {
+    await fs.promises.rm(expectedExecutable, { force: true });
+    await fs.promises.copyFile(simulatorSource, expectedExecutable);
+  }
+  await fs.promises.writeFile(installMarker, platformArchiveName);
+  return true;
+}
+
+async function prepareToolkit(
+  context: vscode.ExtensionContext
+): Promise<{ toolkitRoot: string; simulatorInstalled: boolean }> {
+  const config = loadToolkitConfig(context);
+  const storagePath = context.globalStorageUri.fsPath;
+  const toolkitRoot = path.join(storagePath, config.toolkit.storageFolder, config.toolkit.version);
+  const archivePath = path.join(storagePath, config.download.fileName);
+  await fs.promises.mkdir(toolkitRoot, { recursive: true });
+  let archiveIsPresent = false;
+  try {
+    archiveIsPresent = (await fs.promises.stat(archivePath)).size > 0;
+  } catch {
+    // Download the toolkit if it is not already cached.
+  }
+
+  return vscode.window.withProgress(
+    {
+      location: vscode.ProgressLocation.Notification,
+      title: 'Setting up Macle DevToolkit',
+      cancellable: false,
+    },
+    async (progress) => {
+      if (!archiveIsPresent) {
+        const temporaryArchive = `${archivePath}.download`;
+        await fs.promises.rm(temporaryArchive, { force: true });
+        progress.report({ message: 'Downloading toolkit' });
+        try {
+          await downloadToolkitFile(new URL(config.download.url), temporaryArchive, progress, {
+            received: 0,
+            reportedPercent: 0,
+          });
+          await fs.promises.rename(temporaryArchive, archivePath);
+          outputChannel.appendLine(`Downloaded Macle DevToolkit to ${archivePath}`);
+        } catch (error) {
+          await fs.promises.rm(temporaryArchive, { force: true });
+          throw error;
+        }
+      }
+
+      const contentsDirectory = path.join(toolkitRoot, config.toolkit.contentsFolder);
+      progress.report({ message: 'Extracting toolkit archive' });
+      await extractZipIfNeeded(context, archivePath, contentsDirectory, config.download.fileName);
+
+      const uiArchive = await findNamedEntry(contentsDirectory, config.archives.ui, 'file');
+      const compilerArchive = await findNamedEntry(contentsDirectory, config.archives.compiler, 'file');
+      const simulatorArchive = await findNamedEntry(contentsDirectory, config.archives.simulator, 'file');
+      if (!uiArchive || !compilerArchive || !simulatorArchive) {
+        throw new Error('The toolkit archive is missing one or more UI, Engine Compiler, or Simulator ZIPs.');
+      }
+
+      progress.report({ message: 'Extracting DevSuite UI' });
+      const uiDirectory = path.join(toolkitRoot, config.toolkit.uiFolder);
+      await extractZipIfNeeded(context, uiArchive, uiDirectory, config.archives.ui);
+      progress.report({ message: 'Extracting Engine Compiler' });
+      const compilerDirectory = path.join(toolkitRoot, config.toolkit.compilerFolder);
+      await extractZipIfNeeded(context, compilerArchive, compilerDirectory, config.archives.compiler);
+      progress.report({ message: 'Extracting Simulator' });
+      const simulatorDirectory = path.join(toolkitRoot, config.toolkit.simulatorFolder);
+      await extractZipIfNeeded(context, simulatorArchive, simulatorDirectory, config.archives.simulator);
+      progress.report({ message: 'Installing platform simulator for Macle Tools' });
+      const simulatorInstalled = await installPlatformSimulator(context, toolkitRoot, simulatorDirectory);
+      return { toolkitRoot, simulatorInstalled };
+    }
+  );
+}
+
+function ensureToolkitInstalled(
+  context: vscode.ExtensionContext
+): Promise<{ toolkitRoot: string; simulatorInstalled: boolean }> {
+  if (!toolkitInstallPromise) {
+    toolkitInstallPromise = prepareToolkit(context).catch((error) => {
+      toolkitInstallPromise = undefined;
+      throw error;
+    });
+  }
+  return toolkitInstallPromise;
+}
 
 function projectRoot(): string | undefined {
   const activeDocument = vscode.window.activeTextEditor?.document.uri;
@@ -180,26 +546,23 @@ async function waitForOutputChange(
   return false;
 }
 
-async function openMacleSimulator(outputDir: string): Promise<void> {
-  const extension = vscode.extensions.getExtension(officialToolsExtensionId);
-  if (!extension) {
-    const choice = await vscode.window.showInformationMessage(
-      `Build complete at ${outputDir}. Install Macle MiniProgram Tools to open the simulator.`,
-      'Install Extension'
-    );
-    if (choice === 'Install Extension') {
-      await vscode.env.openExternal(
-        vscode.Uri.parse(
-          `https://marketplace.visualstudio.com/items?itemName=${officialToolsExtensionId}`
-        )
-      );
-    }
-    return;
-  }
-
+async function openMacleSimulator(
+  outputDir: string,
+  context: vscode.ExtensionContext
+): Promise<void> {
   try {
+    const toolkit = await ensureToolkitInstalled(context);
+    if (!toolkit.simulatorInstalled) {
+      void vscode.window.showInformationMessage(
+        `Build complete at ${outputDir}. The toolkit is extracted, but Macle does not provide a simulator package for ${process.platform}.`
+      );
+      return;
+    }
+    const config = loadToolkitConfig(context);
+    const extension = vscode.extensions.getExtension(config.officialExtension.id);
+    if (!extension) throw new Error('Macle MiniProgram Tools is not installed.');
     await extension.activate();
-    await vscode.commands.executeCommand(officialSimulatorCommand);
+    await vscode.commands.executeCommand(config.officialExtension.simulatorCommand);
     void vscode.window.showInformationMessage(
       `Macle DevTools simulator command invoked. Build output: ${outputDir}`
     );
@@ -339,7 +702,7 @@ async function startBuild(
     );
     return;
   }
-  await openMacleSimulator(outputDir);
+  await openMacleSimulator(outputDir, context);
 }
 
 async function configureMauiLibrary(context: vscode.ExtensionContext): Promise<void> {
@@ -417,6 +780,21 @@ function outputDirectory(root: string): string {
 }
 
 export function activate(context: vscode.ExtensionContext): void {
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration((event) => {
+      if (event.affectsConfiguration('macle.toolkit.configFile')) {
+        toolkitConfig = undefined;
+        toolkitInstallPromise = undefined;
+      }
+    })
+  );
+
+  void ensureToolkitInstalled(context).catch((error) => {
+    const message = `Could not set up Macle DevToolkit. It will be retried the next time VS Code starts: ${String(error)}`;
+    outputChannel.appendLine(message);
+    void vscode.window.showWarningMessage(message);
+  });
+
   context.subscriptions.push(
     vscode.window.registerTreeDataProvider('macle.tools', new MacleActivityProvider())
   );

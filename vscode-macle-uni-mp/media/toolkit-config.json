@@ -1,0 +1,42 @@
+{
+  "download": {
+    "url": "https://developer.ethiotelecom.et/developer_tools/static/download/DevToolkit_26.6.0-LG0001.zip",
+    "fileName": "DevToolkit_26.6.0-LG0001.zip",
+    "timeoutMs": 30000,
+    "redirectLimit": 5
+  },
+  "toolkit": {
+    "version": "26.6.0",
+    "storageFolder": "toolkit",
+    "contentsFolder": "contents",
+    "uiFolder": "ui",
+    "compilerFolder": "engine-compiler",
+    "simulatorFolder": "simulator"
+  },
+  "archives": {
+    "ui": "Macle_26.6.0-LG0001_DevSuite_UI.zip",
+    "compiler": "Macle_26.6.0-LG0001_Engine_Compiler.zip",
+    "simulator": "Macle_26.6.0-LG0001_DevSuite_Simulator.zip",
+    "platformPrefix": "Macle_26.6.0-LG0001_DevSuite_Simulator",
+    "platformSuffix": ".zip"
+  },
+  "officialExtension": {
+    "id": "MacleTeam.macle-miniprogram-tools",
+    "simulatorCommand": "MiniProgram.commands.tools.simulator.openInStandAlone",
+    "relativeSimulatorDirectory": ["src", "utils", "simulator"],
+    "zipExtractorModule": "@macle/compressing"
+  },
+  "platforms": {
+    "darwin": {
+      "archiveLabel": "Mac",
+      "simulatorDirectory": "mac",
+      "appName": "macle-simulator.app",
+      "executableRelativePath": ["Contents", "MacOS", "macle-simulator"]
+    },
+    "win32": {
+      "archiveLabel": "Win",
+      "simulatorDirectory": "windows",
+      "executableName": "macle-simulator.exe"
+    }
+  }
+}

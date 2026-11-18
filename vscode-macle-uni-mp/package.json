@@ -34,6 +34,9 @@
     "Vue.volar",
     "uni-helper.uni-app-schemas-vscode"
   ],
+  "extensionDependencies": [
+    "MacleTeam.macle-miniprogram-tools"
+  ],
   "contributes": {
     "viewsContainers": {
       "activitybar": [
@@ -81,6 +84,11 @@
           "type": "string",
           "default": "maui-components",
           "description": "Project-relative folder where the selected MAUI dist files are copied."
+        },
+        "macle.toolkit.configFile": {
+          "type": "string",
+          "default": "",
+          "description": "Optional absolute or extension-relative path to a Macle toolkit JSON configuration file."
         }
       }
     },
