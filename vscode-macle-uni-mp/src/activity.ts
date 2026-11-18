@@ -1,0 +1,59 @@
+import * as vscode from 'vscode';
+
+interface MacleAction {
+  label: string;
+  description: string;
+  command: string;
+  icon: string;
+}
+
+const actions: MacleAction[] = [
+  {
+    label: 'Compile & Preview',
+    description: 'Build for Macle and open the simulator',
+    command: 'macle.compileAndPreview',
+    icon: 'play',
+  },
+  {
+    label: 'Compile for Macle',
+    description: 'Start a development build',
+    command: 'macle.compileDev',
+    icon: 'tools',
+  },
+  {
+    label: 'Compatibility Report',
+    description: 'View build compatibility findings',
+    command: 'macle.openCompatibilityReport',
+    icon: 'report',
+  },
+  {
+    label: 'Configure MAUI UI Library',
+    description: 'Copy the library and register page components',
+    command: 'macle.configureMauiLibrary',
+    icon: 'cloud-download',
+  },
+];
+
+export class MacleActionItem extends vscode.TreeItem {
+  constructor(action: MacleAction) {
+    super(action.label, vscode.TreeItemCollapsibleState.None);
+    this.description = action.description;
+    this.tooltip = action.description;
+    this.iconPath = new vscode.ThemeIcon(action.icon);
+    this.command = {
+      command: action.command,
+      title: action.label,
+    };
+    this.contextValue = 'macleAction';
+  }
+}
+
+export class MacleActivityProvider implements vscode.TreeDataProvider<MacleActionItem> {
+  getTreeItem(element: MacleActionItem): vscode.TreeItem {
+    return element;
+  }
+
+  getChildren(): MacleActionItem[] {
+    return actions.map((action) => new MacleActionItem(action));
+  }
+}

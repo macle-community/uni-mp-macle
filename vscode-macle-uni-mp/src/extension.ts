@@ -7,6 +7,8 @@ import { componentCompletionProvider } from './completions';
 import { createConditionalDecorations } from './decorations';
 import { openCompatibilityReport } from './report';
 import { createMauiLibraryPlan, installMauiLibrary } from './maui-library';
+import { MacleActivityProvider } from './activity';
+import { resolveUniCli } from './uni-cli';
 
 const officialToolsExtensionId = 'MacleTeam.macle-miniprogram-tools';
 const officialSimulatorCommand = 'MiniProgram.commands.tools.simulator.openInStandAlone';
@@ -208,9 +210,32 @@ async function openMacleSimulator(outputDir: string): Promise<void> {
   }
 }
 
-async function startBuild(preview: boolean): Promise<void> {
-  const root = projectRoot();
-  if (!root) {
+async function selectUniAppProject(): Promise<{ root: string; cli: NonNullable<ReturnType<typeof resolveUniCli>> } | undefined> {
+  const selected = await vscode.window.showOpenDialog({
+    canSelectFiles: false,
+    canSelectFolders: true,
+    canSelectMany: false,
+    openLabel: 'Select uni-app project',
+    title: 'Select a uni-app application folder',
+  });
+  const root = selected?.[0]?.fsPath;
+  if (!root) return undefined;
+  const cli = resolveUniCli(root);
+  if (!cli) {
+    void vscode.window.showErrorMessage(
+      `No uni CLI was found in "${root}". Install the app dependencies (npm install) and ensure @dcloudio/vite-plugin-uni is listed in the uni-app project's dependencies.`
+    );
+    return undefined;
+  }
+  return { root, cli };
+}
+
+async function startBuild(
+  preview: boolean,
+  context: vscode.ExtensionContext
+): Promise<void> {
+  const preferredRoot = projectRoot();
+  if (!preferredRoot) {
     void vscode.window.showErrorMessage('Open a uni-app project folder before compiling for Macle.');
     return;
   }
@@ -219,13 +244,50 @@ async function startBuild(preview: boolean): Promise<void> {
     return;
   }
 
-  const cli = path.join(root, 'node_modules', '.bin', process.platform === 'win32' ? 'uni.cmd' : 'uni');
-  if (!fs.existsSync(cli)) {
-    void vscode.window.showErrorMessage(
-      'The local uni CLI was not found. Install the project dependencies before building.'
+  const workspaceRoots = vscode.workspace.workspaceFolders?.map((folder) => folder.uri.fsPath) ?? [];
+  const savedRoot = context.workspaceState.get<string>('macle.uniAppProjectRoot');
+  const candidateRoots = [
+    preferredRoot,
+    ...(savedRoot ? [savedRoot] : []),
+    ...workspaceRoots.filter((root) => path.resolve(root) !== path.resolve(preferredRoot)),
+  ];
+  const uniqueRoots = [...new Set(candidateRoots.map((root) => path.resolve(root)))];
+  const projectCandidates = uniqueRoots.flatMap((root) => {
+    const cli = resolveUniCli(root);
+    return cli ? [{ root, cli }] : [];
+  });
+  let project = projectCandidates.find(
+    (candidate) => path.resolve(candidate.root) === path.resolve(preferredRoot)
+  );
+  if (!project && projectCandidates.length === 1) project = projectCandidates[0];
+  if (!project && projectCandidates.length > 1) {
+    const selected = await vscode.window.showQuickPick(
+      projectCandidates.map((candidate) => ({
+        label: path.basename(candidate.root),
+        description: candidate.root,
+        candidate,
+      })),
+      { placeHolder: 'Choose the uni-app project to build for Macle' }
     );
-    return;
+    project = selected?.candidate;
   }
+  if (!project) {
+    const expectedCommand = path.join(
+      preferredRoot,
+      'node_modules',
+      '.bin',
+      process.platform === 'win32' ? 'uni.cmd' : 'uni'
+    );
+    const choice = await vscode.window.showErrorMessage(
+      `No uni-app CLI was found for "${preferredRoot}". Open the uni-app application folder (not the plugin repository) and install its dependencies. Expected a local CLI at "${expectedCommand}" or @dcloudio/vite-plugin-uni in the app's dependency tree.`,
+      'Select uni-app Folder'
+    );
+    if (choice !== 'Select uni-app Folder') return;
+    project = await selectUniAppProject();
+    if (!project) return;
+  }
+  const { root, cli } = project;
+  await context.workspaceState.update('macle.uniAppProjectRoot', root);
   const configPath = configureProject(root);
   if (!configPath) return;
 
@@ -244,7 +306,11 @@ async function startBuild(preview: boolean): Promise<void> {
   outputChannel.show(true);
   outputChannel.appendLine(`Starting Macle build in ${root}`);
   outputChannel.appendLine(`Output: ${outputDir}`);
-  const child = spawn(cli, args, { cwd: root, env, shell: process.platform === 'win32' });
+  const child = spawn(cli.command, [...cli.argsPrefix, ...args], {
+    cwd: root,
+    env,
+    shell: cli.shell,
+  });
   buildProcess = child;
   let spawnFailed = false;
   child.stdout?.on('data', (data: Buffer) => outputChannel.append(data.toString()));
@@ -351,6 +417,10 @@ function outputDirectory(root: string): string {
 }
 
 export function activate(context: vscode.ExtensionContext): void {
+  context.subscriptions.push(
+    vscode.window.registerTreeDataProvider('macle.tools', new MacleActivityProvider())
+  );
+
   const diagnosticCollection = vscode.languages.createDiagnosticCollection('macle');
   const diagnosticsFor = (document: vscode.TextDocument): void =>
     updateDiagnostics(document, diagnosticCollection);
@@ -395,9 +465,11 @@ export function activate(context: vscode.ExtensionContext): void {
   );
 
   const compileAndPreview = vscode.commands.registerCommand('macle.compileAndPreview', () =>
-    startBuild(true)
+    startBuild(true, context)
   );
-  const compileDev = vscode.commands.registerCommand('macle.compileDev', () => startBuild(false));
+  const compileDev = vscode.commands.registerCommand('macle.compileDev', () =>
+    startBuild(false, context)
+  );
   const openReport = vscode.commands.registerCommand('macle.openCompatibilityReport', async () => {
     const root = projectRoot();
     if (!root) {

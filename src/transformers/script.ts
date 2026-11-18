@@ -47,6 +47,8 @@ function transformJsToMacle(code: unknown, filename = 'unknown.js'): { code: str
             }
             if (!propName) return;
 
+            if (objName === 'wx' && propName === 'createPage') return;
+
             let managerPrefix = trackedInstances[objName];
             const binding = astPath.scope.getBinding(objName);
             if (!managerPrefix && binding) {

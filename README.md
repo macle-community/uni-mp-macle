@@ -68,7 +68,7 @@ Then click **Run -> Run to Mini Program Simulator -> Macle MiniProgram** inside 
 
 ## 4. VS Code Extension
 
-The standalone extension in [`vscode-macle-uni-mp/`](./vscode-macle-uni-mp/) bundles the Macle compiler and adds:
+The standalone extension in [`vscode-macle-uni-mp/`](./vscode-macle-uni-mp/) bundles the Macle compiler and adds an **Macle** Activity Bar view with quick-action links, plus:
 
 - **Macle: Compile & Preview in Macle** and a status-bar button; this starts the project's local uni CLI, writes to `dist/dev/mp-macle`, and invokes the official Macle simulator command when `MacleTeam.macle-miniprogram-tools` is installed.
 - Live warnings for unsupported APIs and Vue template components, with conditional-compilation quick fixes and Macle documentation links. Vue templates also get built-in and MAUI component/known-attribute IntelliSense.

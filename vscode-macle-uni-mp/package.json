@@ -15,6 +15,7 @@
   "main": "./lib/extension.js",
   "files": [
     "lib/**",
+    "media/**",
     "snippets/**",
     "README.md"
   ],
@@ -23,6 +24,7 @@
     "onLanguage:vue",
     "onLanguage:javascript",
     "onLanguage:typescript",
+    "onView:macle.tools",
     "onCommand:macle.compileAndPreview",
     "onCommand:macle.compileDev",
     "onCommand:macle.openCompatibilityReport",
@@ -33,6 +35,23 @@
     "uni-helper.uni-app-schemas-vscode"
   ],
   "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "macle",
+          "title": "Macle",
+          "icon": "./media/macle.svg"
+        }
+      ]
+    },
+    "views": {
+      "macle": [
+        {
+          "id": "macle.tools",
+          "name": "Macle Tools"
+        }
+      ]
+    },
     "commands": [
       {
         "command": "macle.compileAndPreview",
