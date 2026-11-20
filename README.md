@@ -3,6 +3,7 @@
 Compile **uni-app** (Vue 3 / Vite) projects directly into **Macle Mini Program** format (`.maml`, `.mass`, `.sjs`, `ma.*`) with automatic compatibility reporting.
 
 ## 1. Setup
+hhahs
 
 Install the plugin in your uni-app project:
 
