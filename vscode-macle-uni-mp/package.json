@@ -1,10 +1,14 @@
 {
   "name": "vscode-macle-uni-mp",
-  "displayName": "Macle Mini Program Tools for uni-app",
-  "description": "Compile uni-app projects for Macle, inspect compatibility issues, and preview builds in Macle DevTools.",
+  "displayName": "Telebirr MiniApp Dev Kit",
+  "description": "Create Vue uni-app or React Taro projects, compile for Macle, inspect compatibility, and run or debug them in VS Code.",
   "version": "1.0.0",
   "publisher": "macle-community",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/macle-community/uni-mp-macle"
+  },
   "engines": {
     "vscode": "^1.80.0"
   },
@@ -28,7 +32,9 @@
     "onCommand:macle.compileAndPreview",
     "onCommand:macle.compileDev",
     "onCommand:macle.openCompatibilityReport",
-    "onCommand:macle.configureMauiLibrary"
+    "onCommand:macle.configureMauiLibrary",
+    "onCommand:macle.createProject",
+    "onCommand:macle.configureRunAndDebug"
   ],
   "extensionPack": [
     "Vue.volar",
@@ -74,6 +80,16 @@
       {
         "command": "macle.configureMauiLibrary",
         "title": "Macle: Configure MAUI UI Library",
+        "category": "Macle"
+      },
+      {
+        "command": "macle.createProject",
+        "title": "Macle: New Project",
+        "category": "Macle"
+      },
+      {
+        "command": "macle.configureRunAndDebug",
+        "title": "Macle: Configure Run and Debug",
         "category": "Macle"
       }
     ],

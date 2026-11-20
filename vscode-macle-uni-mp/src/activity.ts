@@ -9,6 +9,18 @@ interface MacleAction {
 
 const actions: MacleAction[] = [
   {
+    label: 'New Project',
+    description: 'Create a React Taro or Vue uni-app project',
+    command: 'macle.createProject',
+    icon: 'new-folder',
+  },
+  {
+    label: 'Run & Debug Project',
+    description: 'Configure VS Code launch and task profiles',
+    command: 'macle.configureRunAndDebug',
+    icon: 'debug-alt',
+  },
+  {
     label: 'Compile & Preview',
     description: 'Build for Macle and open the simulator',
     command: 'macle.compileAndPreview',

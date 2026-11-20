@@ -11,6 +11,7 @@ import { openCompatibilityReport } from './report';
 import { createMauiLibraryPlan, installMauiLibrary } from './maui-library';
 import { MacleActivityProvider } from './activity';
 import { resolveUniCli } from './uni-cli';
+import { configureRunAndDebug, createMacleProject } from './project';
 
 const outputChannel = vscode.window.createOutputChannel('Macle uni-app');
 
@@ -859,6 +860,13 @@ export function activate(context: vscode.ExtensionContext): void {
   const setupMaui = vscode.commands.registerCommand('macle.configureMauiLibrary', () =>
     configureMauiLibrary(context)
   );
+  const createProject = vscode.commands.registerCommand('macle.createProject', () =>
+    createMacleProject()
+  );
+  const configureProjectRunAndDebug = vscode.commands.registerCommand(
+    'macle.configureRunAndDebug',
+    () => configureRunAndDebug()
+  );
   const statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 20);
   statusBar.text = '$(play) Macle Preview';
   statusBar.tooltip = 'Compile uni-app and open the Macle simulator';
@@ -869,6 +877,8 @@ export function activate(context: vscode.ExtensionContext): void {
     compileDev,
     openReport,
     setupMaui,
+    createProject,
+    configureProjectRunAndDebug,
     statusBar,
     vscode.workspace.onDidChangeWorkspaceFolders(() => {
       if (vscode.workspace.workspaceFolders?.length) statusBar.show();
