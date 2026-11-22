@@ -34,14 +34,12 @@
     "onCommand:macle.openCompatibilityReport",
     "onCommand:macle.configureMauiLibrary",
     "onCommand:macle.createProject",
-    "onCommand:macle.configureRunAndDebug"
+    "onCommand:macle.configureRunAndDebug",
+    "onCommand:macle.showWelcomePage"
   ],
   "extensionPack": [
     "Vue.volar",
     "uni-helper.uni-app-schemas-vscode"
-  ],
-  "extensionDependencies": [
-    "MacleTeam.macle-miniprogram-tools"
   ],
   "contributes": {
     "viewsContainers": {
@@ -91,6 +89,11 @@
         "command": "macle.configureRunAndDebug",
         "title": "Macle: Configure Run and Debug",
         "category": "Macle"
+      },
+      {
+        "command": "macle.showWelcomePage",
+        "title": "Macle: Show Welcome Page",
+        "category": "Macle"
       }
     ],
     "configuration": {
@@ -138,5 +141,9 @@
         "path": "./snippets/macle.code-snippets"
       }
     ]
+  },
+  "dependencies": {
+    "extract-zip": "^2.0.1",
+    "libarchive-wasm": "^1.2.0"
   }
 }

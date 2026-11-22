@@ -1,9 +1,9 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import https from 'node:https';
-import { createRequire } from 'node:module';
 import path from 'node:path';
 import * as vscode from 'vscode';
+import extractZipModule from 'extract-zip';
 import { codeActionProvider, updateDiagnostics } from './diagnostics';
 import { componentCompletionProvider } from './completions';
 import { createConditionalDecorations } from './decorations';
@@ -12,17 +12,16 @@ import { createMauiLibraryPlan, installMauiLibrary } from './maui-library';
 import { MacleActivityProvider } from './activity';
 import { resolveUniCli } from './uni-cli';
 import { configureRunAndDebug, createMacleProject } from './project';
+import { showWelcomePage } from './welcome';
 
 const outputChannel = vscode.window.createOutputChannel('Macle uni-app');
 
 let buildProcess: ChildProcess | undefined;
-let toolkitInstallPromise: Promise<{ toolkitRoot: string; simulatorInstalled: boolean }> | undefined;
-
-interface ZipExtractor {
-  zip: {
-    uncompress(source: string, destination: string): Promise<void>;
-  };
-}
+let toolkitInstallPromise: Promise<{
+  toolkitRoot: string;
+  simulatorInstalled: boolean;
+  officialExtensionInstalled: boolean;
+}> | undefined;
 
 interface ToolkitConfig {
   download: { url: string; fileName: string; timeoutMs: number; redirectLimit: number };
@@ -33,11 +32,13 @@ interface ToolkitConfig {
     uiFolder: string;
     compilerFolder: string;
     simulatorFolder: string;
+    ideFolder: string;
   };
   archives: {
     ui: string;
     compiler: string;
     simulator: string;
+    ide: string;
     platformPrefix: string;
     platformSuffix: string;
   };
@@ -85,13 +86,17 @@ function loadToolkitConfig(context: vscode.ExtensionContext): ToolkitConfig {
   return parsed;
 }
 
-function downloadToolkitFile(
+
+class DownloadInterruptedError extends Error {}
+
+function downloadToolkitAttempt(
   url: URL,
   destination: string,
   progress: vscode.Progress<{ message?: string; increment?: number }>,
   state: { received: number; reportedPercent: number },
-  redirects = 0
-): Promise<void> {
+  redirects: number,
+  token?: vscode.CancellationToken
+): Promise<number | undefined> {
   return new Promise((resolve, reject) => {
     const config = toolkitConfig;
     if (!config) {
@@ -102,8 +107,26 @@ function downloadToolkitFile(
       reject(new Error('The toolkit download exceeded the redirect limit.'));
       return;
     }
+    if (token?.isCancellationRequested) {
+      reject(new Error('Download cancelled by user.'));
+      return;
+    }
 
-    const request = https.get(url, (response) => {
+    // Resume support: pick up where a previous attempt left off.
+    let resumeFrom = 0;
+    try {
+      resumeFrom = fs.statSync(destination).size;
+    } catch {
+      resumeFrom = 0;
+    }
+    if (resumeFrom > 0) {
+      outputChannel.appendLine(`Resuming download from byte ${resumeFrom}...`);
+    }
+
+    const headers: Record<string, string> = {};
+    if (resumeFrom > 0) headers['Range'] = `bytes=${resumeFrom}-`;
+
+    const request = https.get(url, { headers }, (response) => {
       const status = response.statusCode ?? 0;
       if ([301, 302, 303, 307, 308].includes(status)) {
         response.resume();
@@ -117,24 +140,59 @@ function downloadToolkitFile(
           reject(new Error('The toolkit server redirected to a non-HTTPS URL.'));
           return;
         }
-        void downloadToolkitFile(redirectUrl, destination, progress, state, redirects + 1).then(
+        void downloadToolkitAttempt(redirectUrl, destination, progress, state, redirects + 1, token).then(
           resolve,
           reject
         );
         return;
       }
-      if (status !== 200) {
+
+      // Server ignored the Range header and is restarting from scratch.
+      if (status === 200 && resumeFrom > 0) {
+        response.destroy();
+        outputChannel.appendLine('Server does not support resume (HTTP 200 for range request); restarting download.');
+        fs.promises.rm(destination, { force: true })
+          .then(() => downloadToolkitAttempt(url, destination, progress, { received: 0, reportedPercent: 0 }, redirects, token))
+          .then(resolve, reject);
+        return;
+      }
+
+      // Range beyond file size — the partial file is already complete.
+      if (status === 416) {
+        response.resume();
+        fs.promises.stat(destination).then(
+          (stat) => resolve(stat.size),
+          () => reject(new Error('The toolkit server returned HTTP 416 for the resume request.'))
+        );
+        return;
+      }
+
+      if (status !== 200 && status !== 206) {
         response.resume();
         reject(new Error(`The toolkit server returned HTTP ${status}.`));
         return;
       }
 
-      const total = Number(response.headers['content-length']);
-      const output = fs.createWriteStream(destination);
+      const resuming = status === 206;
+      const rangeTotal = Number(response.headers['content-length']);
+      const total = Number.isFinite(rangeTotal) && rangeTotal > 0
+        ? (resuming ? resumeFrom + rangeTotal : rangeTotal)
+        : undefined;
+
+      state.received = resuming ? resumeFrom : 0;
+      state.reportedPercent = 0;
+
+      const output = fs.createWriteStream(destination, { flags: resuming ? 'a' : 'w' });
       response.on('data', (chunk: Buffer) => {
+        if (token?.isCancellationRequested) {
+          response.destroy();
+          output.destroy();
+          reject(new Error('Download cancelled by user.'));
+          return;
+        }
         state.received += chunk.length;
         const receivedMb = (state.received / (1024 * 1024)).toFixed(1);
-        if (Number.isFinite(total) && total > 0) {
+        if (total && total > 0) {
           const percent = Math.floor((state.received / total) * 100);
           progress.report({
             message: `${percent}% (${receivedMb} MB)`,
@@ -146,27 +204,225 @@ function downloadToolkitFile(
         }
       });
       response.on('error', reject);
-      response.on('aborted', () => reject(new Error('The toolkit download was interrupted.')));
+      response.on('aborted', () => {
+        output.destroy();
+        reject(new DownloadInterruptedError('The toolkit download was interrupted.'));
+      });
       output.on('error', reject);
       output.on('finish', () => {
-        output.close((error) => (error ? reject(error) : resolve()));
+        output.close((error) => {
+          if (error) {
+            reject(error);
+            return;
+          }
+          if (total && state.received < total) {
+            reject(new DownloadInterruptedError(
+              `The toolkit download ended early (${state.received} of ${total} bytes).`
+            ));
+            return;
+          }
+          resolve(total);
+        });
       });
       response.pipe(output);
     });
     request.setTimeout(
       config.download.timeoutMs,
-      () => request.destroy(new Error('The toolkit download timed out.'))
+      () => request.destroy(new DownloadInterruptedError('The toolkit download timed out.'))
     );
     request.on('error', reject);
+
+    token?.onCancellationRequested(() => {
+      request.destroy(new Error('Download cancelled by user.'));
+    });
   });
 }
 
-function getZipExtractor(context: vscode.ExtensionContext): ZipExtractor {
-  const config = loadToolkitConfig(context);
-  const extension = vscode.extensions.getExtension(config.officialExtension.id);
-  if (!extension) throw new Error('The required Macle MiniProgram Tools extension is not installed.');
-  const extensionRequire = createRequire(path.join(extension.extensionPath, 'package.json'));
-  return extensionRequire(config.officialExtension.zipExtractorModule) as ZipExtractor;
+async function downloadToolkitFile(
+  url: URL,
+  destination: string,
+  progress: vscode.Progress<{ message?: string; increment?: number }>,
+  state: { received: number; reportedPercent: number },
+  redirects = 0,
+  token?: vscode.CancellationToken
+): Promise<void> {
+  const maxAttempts = 10;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      await downloadToolkitAttempt(url, destination, progress, state, redirects, token);
+      return;
+    } catch (error) {
+      if (token?.isCancellationRequested) throw error;
+      const message = String(error);
+      const recoverable =
+        error instanceof DownloadInterruptedError ||
+        message.includes('interrupted') ||
+        message.includes('timed out') ||
+        message.includes('ECONNRESET') ||
+        message.includes('EPIPE') ||
+        message.includes('ETIMEDOUT') ||
+        message.includes('socket hang up');
+      if (!recoverable || attempt === maxAttempts) throw error;
+      const delayMs = Math.min(2000 * attempt, 10000);
+      outputChannel.appendLine(
+        `Download attempt ${attempt}/${maxAttempts} failed (${message}). Retrying in ${Math.round(delayMs / 1000)}s...`
+      );
+      void vscode.window.showInformationMessage(
+        `Toolkit download interrupted — resuming automatically (attempt ${attempt + 1} of ${maxAttempts})...`
+      );
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+}
+
+function extractZipWithSystemUnzip(source: string, destination: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn('unzip', ['-o', '-q', source, '-d', destination], {
+      stdio: ['ignore', 'ignore', 'pipe'],
+    });
+    let stderr = '';
+    child.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+    child.on('error', (error) => reject(new Error(`Failed to run unzip: ${String(error)}`)));
+    child.on('close', (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`unzip exited with code ${code}${stderr ? `: ${stderr.trim()}` : ''}`));
+    });
+  });
+}
+
+/**
+ * Extract via libarchive compiled to WebAssembly (libarchive-wasm).
+ *
+ * This handles archive variants the other extractors cannot, such as
+ * Deflate64 (method 9) compressed entries, unusual zip64 layouts and
+ * archives whose central directory confuses yauzl/Info-ZIP. It loads the
+ * whole archive into memory, so it is only used as a fallback for archives
+ * the streaming extractors failed on.
+ */
+async function extractZipWithLibarchive(
+  context: vscode.ExtensionContext,
+  source: string,
+  destination: string
+): Promise<void> {
+  let wasmPath = path.join(
+    context.extensionPath,
+    'node_modules',
+    'libarchive-wasm',
+    'dist',
+    'libarchive.wasm'
+  );
+  if (!fs.existsSync(wasmPath)) {
+    // Bundled layouts may ship the wasm next to the compiled extension.
+    wasmPath = path.join(path.dirname(__dirname), 'libarchive.wasm');
+  }
+  const wasmBinary = await fs.promises.readFile(wasmPath);
+
+  const { libarchiveWasm, ArchiveReader } = await import('libarchive-wasm');
+  const mod = await libarchiveWasm({ wasmBinary } as never);
+
+  const data = await fs.promises.readFile(source);
+  const archiveLabel = path.basename(source);
+  const reader = new ArchiveReader(mod, new Int8Array(data.buffer, data.byteOffset, data.byteLength));
+  const destinationRoot = path.resolve(destination);
+  await fs.promises.mkdir(destinationRoot, { recursive: true });
+
+  let extractedFiles = 0;
+  let extractedDirs = 0;
+  try {
+    for (const entry of reader.entries()) {
+      const entryPath = entry.getPathname();
+      if (!entryPath || entryPath.includes('../')) {
+        outputChannel.appendLine(`Skipping unsafe archive entry: ${entryPath}`);
+        continue;
+      }
+      const normalized = entryPath.replace(/\\/g, '/').replace(/^\/+/, '');
+      const target = path.resolve(destinationRoot, normalized);
+      if (target !== destinationRoot && !target.startsWith(destinationRoot + path.sep)) {
+        outputChannel.appendLine(`Skipping archive entry outside destination: ${entryPath}`);
+        continue;
+      }
+
+      const filetype = entry.getFiletype();
+      if (filetype === 'Directory' || normalized.endsWith('/')) {
+        await fs.promises.mkdir(target, { recursive: true });
+        extractedDirs++;
+        continue;
+      }
+      if (filetype === 'SymbolicLink') {
+        // Refuse to create symlinks from untrusted archives.
+        outputChannel.appendLine(`Skipping symlink entry: ${entryPath}`);
+        continue;
+      }
+
+      await fs.promises.mkdir(path.dirname(target), { recursive: true });
+      const chunk = entry.readData();
+      if (!chunk) {
+        // Zero-size entry; make sure the file still exists on disk.
+        await fs.promises.writeFile(target, Buffer.alloc(0));
+        extractedFiles++;
+        continue;
+      }
+      await fs.promises.writeFile(target, Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength));
+      extractedFiles++;
+    }
+  } catch (error) {
+    if (error instanceof Error && /memory access out of bounds|abort|RuntimeError/i.test(error.message)) {
+      // A wasm abort usually means the data is not a recognizable archive at all.
+      throw new Error(
+        `libarchive-wasm could not read ${archiveLabel}: the file does not appear to be a recognizable archive.`
+      );
+    }
+    throw error;
+  } finally {
+    try { reader.free(); } catch { /* ignore */ }
+  }
+  outputChannel.appendLine(
+    `libarchive-wasm extracted ${extractedFiles} files, ${extractedDirs} directories from ${archiveLabel}`
+  );
+}
+
+interface ArchiveSignatureInfo {
+  format: string;
+  hex: string;
+}
+
+/**
+ * Detect the archive type from the leading bytes. ZIP archives start with
+ * "PK"; toolkit archives are sometimes RAR ("Rar!"), 7-Zip ("7z\xBC\xAF") or
+ * self-extracting executables with an MZ header — all of which libarchive-wasm
+ * can read even when the file is named .zip.
+ */
+async function detectArchiveSignature(filePath: string): Promise<ArchiveSignatureInfo | null> {
+  try {
+    const handle = await fs.promises.open(filePath, 'r');
+    try {
+      const buffer = Buffer.alloc(8);
+      const read = await handle.read(buffer, 0, 8, 0);
+      const hex = buffer.slice(0, read.bytesRead).toString('hex').toUpperCase();
+      if (buffer[0] === 0x50 && buffer[1] === 0x4b) {
+        return { format: 'zip', hex };
+      }
+      if (buffer[0] === 0x52 && buffer[1] === 0x61 && buffer[2] === 0x72 && buffer[3] === 0x21) {
+        return { format: 'rar', hex };
+      }
+      if (buffer[0] === 0x37 && buffer[1] === 0x7a && buffer[2] === 0xbc && buffer[3] === 0xaf) {
+        return { format: '7z', hex };
+      }
+      if (buffer[0] === 0x4d && buffer[1] === 0x5a) {
+        return { format: 'sfx-executable', hex };
+      }
+      return { format: 'unknown', hex };
+    } finally {
+      await handle.close();
+    }
+  } catch {
+    return null;
+  }
+}
+
+async function hasZipSignature(filePath: string): Promise<boolean> {
+  const info = await detectArchiveSignature(filePath);
+  return info !== null && info.format !== 'unknown';
 }
 
 async function extractZip(
@@ -175,7 +431,69 @@ async function extractZip(
   destination: string
 ): Promise<void> {
   await fs.promises.mkdir(destination, { recursive: true });
-  await getZipExtractor(context).zip.uncompress(source, destination);
+
+  const stat = await fs.promises.stat(source).catch(() => undefined);
+  const sizeLabel = stat ? `${stat.size} bytes` : 'unknown size';
+  outputChannel.appendLine(`Extracting ${source} (${sizeLabel})...`);
+
+  if (!stat || stat.size === 0) {
+    throw new Error(
+      `Archive ${path.basename(source)} is missing or empty (${sizeLabel}). Re-download the toolkit.`
+    );
+  }
+  // Do not gate extraction on the signature: toolkit archives are sometimes
+  // RAR/7z/SFX payloads named .zip, which extract-zip rejects but
+  // libarchive-wasm reads. Log what we found and let the extractors decide.
+  const signature = await detectArchiveSignature(source);
+  if (!signature || signature.format === 'unknown') {
+    outputChannel.appendLine(
+      `Warning: ${path.basename(source)} has an unrecognized leading signature ` +
+      `(${signature ? signature.hex : 'unreadable'}). Attempting extraction anyway.`
+    );
+  } else if (signature.format !== 'zip') {
+    outputChannel.appendLine(
+      `${path.basename(source)} is ${signature.format} data (starts with ${signature.hex}) — ` +
+      `skipping extract-zip and using libarchive-wasm.`
+    );
+    await extractZipWithLibarchive(context, source, destination);
+    return;
+  } else {
+    outputChannel.appendLine(`${path.basename(source)} has a valid ZIP signature (${signature.hex}).`);
+  }
+
+  let extractZipError: unknown;
+  try {
+    await extractZipModule(source, { dir: destination });
+    return;
+  } catch (error) {
+    extractZipError = error;
+    outputChannel.appendLine(`extract-zip failed for ${path.basename(source)}: ${String(error)}`);
+  }
+  try {
+    await extractZipWithLibarchive(context, source, destination);
+    outputChannel.appendLine(`Extracted ${path.basename(source)} with libarchive-wasm.`);
+    return;
+  } catch (libarchiveError) {
+    outputChannel.appendLine(
+      `libarchive-wasm failed for ${path.basename(source)}: ${String(libarchiveError)}`
+    );
+  }
+  try {
+    if (process.platform === 'win32') {
+      // Official VS Code on Windows has no system unzip binary.
+      outputChannel.appendLine(
+        `System unzip is not available on ${process.platform} — skipping the final fallback.`
+      );
+      throw new Error('System unzip is not available on this platform.');
+    }
+    await extractZipWithSystemUnzip(source, destination);
+  } catch (unzipError) {
+    throw new Error(
+      `Failed to extract ${path.basename(source)} (${sizeLabel}). ` +
+      `extract-zip: ${String(extractZipError)}. libarchive-wasm: ${String(libarchiveError)}. unzip: ${String(unzipError)}. ` +
+      `The archive may be corrupted — delete the cached toolkit and download it again.`
+    );
+  }
 }
 
 async function extractZipIfNeeded(
@@ -225,14 +543,163 @@ async function findNamedEntry(
   return undefined;
 }
 
+async function findFileWithExtension(
+  root: string,
+  extension: string
+): Promise<string | undefined> {
+  const pending = [root];
+  while (pending.length > 0) {
+    const current = pending.pop()!;
+    let entries;
+    try {
+      entries = await fs.promises.readdir(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const fullPath = path.join(current, entry.name);
+      if (entry.isFile() && entry.name.toLowerCase().endsWith(extension)) {
+        return fullPath;
+      }
+      if (entry.isDirectory()) pending.push(fullPath);
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Poll briefly for the newly installed extension to become visible. A freshly
+ * installed extension may not appear in the current session until the window
+ * reloads, so this is informational only.
+ */
+async function waitForExtensionVisible(extensionId: string, timeoutMs = 10000): Promise<boolean> {
+  if (vscode.extensions.getExtension(extensionId)) return true;
+  const deadline = Date.now() + timeoutMs;
+  return await new Promise<boolean>((resolve) => {
+    const timer = setInterval(() => {
+      if (vscode.extensions.getExtension(extensionId)) {
+        cleanup();
+        resolve(true);
+      } else if (Date.now() > deadline) {
+        cleanup();
+        resolve(false);
+      }
+    }, 500);
+    const subscription = vscode.extensions.onDidChange(() => {
+      if (vscode.extensions.getExtension(extensionId)) {
+        cleanup();
+        resolve(true);
+      }
+    });
+    const cleanup = () => {
+      clearInterval(timer);
+      subscription.dispose();
+    };
+  });
+}
+
+/**
+ * Install the official Macle VS Code extension, step by step:
+ *
+ *  1. Try the marketplace (gallery) by extension ID.
+ *  2. If that fails, install from the .vsix shipped inside the toolkit's IDE archive.
+ *  3. If that also fails, show the user the .vsix path so it can be installed
+ *     manually with "Extensions: Install from VSIX...".
+ *
+ * A completed install command (no thrown error) is treated as success — VS Code
+ * shows its own "Completed installing extension." notification. The extension
+ * may only become visible/active after a window reload.
+ */
+async function installOfficialIdeExtension(
+  context: vscode.ExtensionContext,
+  toolkitRoot: string,
+  ideDirectory: string
+): Promise<boolean> {
+  const config = loadToolkitConfig(context);
+  const officialExtensionId = config.officialExtension.id;
+
+  // Official VS Code mechanism for programmatic installs:
+  // 'workbench.extensions.installExtension' accepts an extension ID (marketplace
+  // install) or a VSIX URI (install from file).
+  const installOfficial = async (
+    target: string | vscode.Uri,
+    label: string
+  ): Promise<boolean> => {
+    await vscode.commands.executeCommand('workbench.extensions.installExtension', target);
+    const visible = await waitForExtensionVisible(officialExtensionId);
+    if (visible) {
+      outputChannel.appendLine(`Installed official Macle extension ${officialExtensionId} ${label}.`);
+    } else {
+      outputChannel.appendLine(
+        `Install command ${label} completed; ${officialExtensionId} is not visible in this session yet. ` +
+        `A window reload will activate it.`
+      );
+    }
+    return true;
+  };
+
+  if (vscode.extensions.getExtension(officialExtensionId)) {
+    outputChannel.appendLine(`Official Macle extension ${officialExtensionId} is already installed.`);
+    return true;
+  }
+
+  // Step 1: marketplace / gallery install by ID.
+  outputChannel.appendLine(`Trying to install ${officialExtensionId} from the marketplace...`);
+  try {
+    if (await installOfficial(officialExtensionId, 'from the marketplace')) {
+      return true;
+    }
+  } catch (error) {
+    outputChannel.appendLine(
+      `Marketplace install of ${officialExtensionId} failed: ${String(error)}`
+    );
+  }
+
+  // Step 2: install from the .vsix inside the toolkit IDE archive.
+  const vsixPath = await findFileWithExtension(ideDirectory, '.vsix');
+  if (vsixPath) {
+    outputChannel.appendLine(`Trying to install the official Macle extension from ${vsixPath}...`);
+    try {
+      if (await installOfficial(vscode.Uri.file(vsixPath), 'from the toolkit')) {
+        return true;
+      }
+    } catch (error) {
+      outputChannel.appendLine(
+        `Toolkit VSIX install of ${officialExtensionId} failed: ${String(error)}`
+      );
+    }
+  } else {
+    outputChannel.appendLine(`No .vsix package found in ${ideDirectory}.`);
+  }
+
+  // Step 3: give the user everything needed to install manually.
+  if (vsixPath) {
+    const choice = await vscode.window.showErrorMessage(
+      `Could not install the official Macle extension (${officialExtensionId}) automatically. ` +
+      `Install it manually with the command "Extensions: Install from VSIX..." and select: ${vsixPath}`,
+      'Copy VSIX Path',
+      'Open Extensions View'
+    );
+    if (choice === 'Copy VSIX Path') {
+      await vscode.env.clipboard.writeText(vsixPath);
+      void vscode.window.showInformationMessage(`VSIX path copied: ${vsixPath}`);
+    } else if (choice === 'Open Extensions View') {
+      await vscode.commands.executeCommand('workbench.view.extensions');
+    }
+  } else {
+    void vscode.window.showErrorMessage(
+      `Could not install the official Macle extension (${officialExtensionId}), and no .vsix was found in the toolkit IDE archive at ${ideDirectory}.`
+    );
+  }
+  return false;
+}
+
 async function installPlatformSimulator(
   context: vscode.ExtensionContext,
   toolkitRoot: string,
   simulatorDirectory: string
 ): Promise<boolean> {
   const config = loadToolkitConfig(context);
-  const extension = vscode.extensions.getExtension(config.officialExtension.id);
-  if (!extension) throw new Error('The required Macle MiniProgram Tools extension is not installed.');
 
   const platform = process.platform;
   if (platform !== 'darwin' && platform !== 'win32') {
@@ -248,8 +715,8 @@ async function installPlatformSimulator(
   if (!platformArchive) throw new Error(`The simulator package is missing ${platformArchiveName}.`);
 
   const officialSimulatorDirectory = path.join(
-    extension.extensionPath,
-    ...config.officialExtension.relativeSimulatorDirectory,
+    toolkitRoot,
+    'simulator',
     platformConfig.simulatorDirectory
   );
   const installMarker = path.join(officialSimulatorDirectory, '.macle-toolkit-version');
@@ -307,45 +774,89 @@ async function installPlatformSimulator(
 
 async function prepareToolkit(
   context: vscode.ExtensionContext
-): Promise<{ toolkitRoot: string; simulatorInstalled: boolean }> {
+): Promise<{
+  toolkitRoot: string;
+  simulatorInstalled: boolean;
+  officialExtensionInstalled: boolean;
+}> {
   const config = loadToolkitConfig(context);
   const storagePath = context.globalStorageUri.fsPath;
+
+  outputChannel.appendLine(`Preparing Macle DevToolkit...`);
+  outputChannel.appendLine(`Global storage path: ${storagePath}`);
+
+  // Honor a user-provided existing toolkit folder (set from the welcome page).
+  const localPath = context.globalState.get<string>('macle.toolkit.localPath');
+  if (localPath) {
+    try {
+      const stat = await fs.promises.stat(localPath);
+      if (stat.isDirectory()) {
+        outputChannel.appendLine(`Using existing Macle toolkit at ${localPath}`);
+        return { toolkitRoot: localPath, simulatorInstalled: false, officialExtensionInstalled: false };
+      }
+    } catch {
+      // Fall through to download when the saved path is missing or invalid.
+    }
+  }
+
   const toolkitRoot = path.join(storagePath, config.toolkit.storageFolder, config.toolkit.version);
   const archivePath = path.join(storagePath, config.download.fileName);
   await fs.promises.mkdir(toolkitRoot, { recursive: true });
   let archiveIsPresent = false;
   try {
-    archiveIsPresent = (await fs.promises.stat(archivePath)).size > 0;
+    const stat = await fs.promises.stat(archivePath);
+    archiveIsPresent = stat.size > 0 && (await hasZipSignature(archivePath));
+    if (archiveIsPresent) {
+      outputChannel.appendLine(`Toolkit archive already cached at ${archivePath} (${stat.size} bytes)`);
+    } else if (stat && !(await hasZipSignature(archivePath))) {
+      outputChannel.appendLine(
+        `Toolkit archive at ${archivePath} (${stat.size} bytes) is not a valid ZIP file — deleting and re-downloading.`
+      );
+      await fs.promises.rm(archivePath, { force: true });
+    }
   } catch {
-    // Download the toolkit if it is not already cached.
+    outputChannel.appendLine(`Toolkit archive not found at ${archivePath} — will download.`);
   }
 
   return vscode.window.withProgress(
     {
       location: vscode.ProgressLocation.Notification,
       title: 'Setting up Macle DevToolkit',
-      cancellable: false,
+      cancellable: true,
     },
-    async (progress) => {
+    async (progress, token) => {
+      let officialExtensionInstalled = false;
+      outputChannel.appendLine(`Starting toolkit setup with progress reporter.`);
       if (!archiveIsPresent) {
         const temporaryArchive = `${archivePath}.download`;
-        await fs.promises.rm(temporaryArchive, { force: true });
+        // Keep any existing partial file so the download can resume instead of restarting.
         progress.report({ message: 'Downloading toolkit' });
         try {
+          outputChannel.appendLine(`Downloading toolkit from ${config.download.url}...`);
           await downloadToolkitFile(new URL(config.download.url), temporaryArchive, progress, {
             received: 0,
             reportedPercent: 0,
-          });
+          }, 0, token);
           await fs.promises.rename(temporaryArchive, archivePath);
           outputChannel.appendLine(`Downloaded Macle DevToolkit to ${archivePath}`);
         } catch (error) {
-          await fs.promises.rm(temporaryArchive, { force: true });
+          if (token.isCancellationRequested) {
+            outputChannel.appendLine(`Download cancelled by user. Partial file kept for resume.`);
+            throw new Error('Download cancelled by user.');
+          }
+          outputChannel.appendLine(`Download failed: ${String(error)}`);
           throw error;
         }
       }
 
+      if (token.isCancellationRequested) {
+        outputChannel.appendLine(`Setup cancelled by user.`);
+        throw new Error('Setup cancelled by user.');
+      }
+
       const contentsDirectory = path.join(toolkitRoot, config.toolkit.contentsFolder);
       progress.report({ message: 'Extracting toolkit archive' });
+      outputChannel.appendLine(`Extracting toolkit archive to ${contentsDirectory}...`);
       await extractZipIfNeeded(context, archivePath, contentsDirectory, config.download.fileName);
 
       const uiArchive = await findNamedEntry(contentsDirectory, config.archives.ui, 'file');
@@ -364,9 +875,23 @@ async function prepareToolkit(
       progress.report({ message: 'Extracting Simulator' });
       const simulatorDirectory = path.join(toolkitRoot, config.toolkit.simulatorFolder);
       await extractZipIfNeeded(context, simulatorArchive, simulatorDirectory, config.archives.simulator);
+
+      progress.report({ message: 'Extracting DevSuite IDE' });
+      const ideDirectory = path.join(toolkitRoot, config.toolkit.ideFolder);
+      const ideArchive = await findNamedEntry(contentsDirectory, config.archives.ide, 'file');
+      if (ideArchive) {
+        await extractZipIfNeeded(context, ideArchive, ideDirectory, config.archives.ide);
+        progress.report({ message: 'Installing official Macle extension' });
+        officialExtensionInstalled = await installOfficialIdeExtension(context, toolkitRoot, ideDirectory);
+      } else {
+        outputChannel.appendLine(
+          `IDE archive ${config.archives.ide} not found in the toolkit contents — skipping official extension install.`
+        );
+      }
+
       progress.report({ message: 'Installing platform simulator for Macle Tools' });
       const simulatorInstalled = await installPlatformSimulator(context, toolkitRoot, simulatorDirectory);
-      return { toolkitRoot, simulatorInstalled };
+      return { toolkitRoot, simulatorInstalled, officialExtensionInstalled };
     }
   );
 }
@@ -381,6 +906,31 @@ function ensureToolkitInstalled(
     });
   }
   return toolkitInstallPromise;
+}
+
+async function offerToolkitRecovery(context: vscode.ExtensionContext, error: unknown): Promise<void> {
+  const message = String(error);
+  outputChannel.appendLine(`Toolkit setup failed: ${message}`);
+  const corrupted =
+    message.includes('not a valid ZIP') ||
+    message.includes('corrupted') ||
+    message.includes('is missing or empty');
+  if (!corrupted) return;
+
+  const choice = await vscode.window.showErrorMessage(
+    'The cached Macle DevToolkit appears to be corrupted (possibly an interrupted download). Delete it and download again?',
+    'Delete and Re-download',
+    'Cancel'
+  );
+  if (choice !== 'Delete and Re-download') return;
+
+  const config = loadToolkitConfig(context);
+  const storagePath = context.globalStorageUri.fsPath;
+  const toolkitRoot = path.join(storagePath, config.toolkit.storageFolder, config.toolkit.version);
+  await fs.promises.rm(toolkitRoot, { recursive: true, force: true });
+  await fs.promises.rm(path.join(storagePath, config.download.fileName), { force: true });
+  outputChannel.appendLine('Deleted corrupted toolkit cache. Re-downloading...');
+  await ensureToolkitInstalled(context);
 }
 
 function projectRoot(): string | undefined {
@@ -560,10 +1110,15 @@ async function openMacleSimulator(
       return;
     }
     const config = loadToolkitConfig(context);
-    const extension = vscode.extensions.getExtension(config.officialExtension.id);
-    if (!extension) throw new Error('Macle MiniProgram Tools is not installed.');
-    await extension.activate();
-    await vscode.commands.executeCommand(config.officialExtension.simulatorCommand);
+    const officialExtension = vscode.extensions.getExtension(config.officialExtension.id);
+    if (!officialExtension) {
+      void vscode.window.showWarningMessage(
+        `Build complete at ${outputDir}, but the official Macle extension (${config.officialExtension.id}) is not active in this session. ` +
+        `If it was just installed from the toolkit, reload the window to activate it — then run the simulator again.`
+      );
+      return;
+    }
+    void vscode.commands.executeCommand(config.officialExtension.simulatorCommand);
     void vscode.window.showInformationMessage(
       `Macle DevTools simulator command invoked. Build output: ${outputDir}`
     );
@@ -781,26 +1336,57 @@ function outputDirectory(root: string): string {
 }
 
 export function activate(context: vscode.ExtensionContext): void {
-  context.subscriptions.push(
-    vscode.workspace.onDidChangeConfiguration((event) => {
-      if (event.affectsConfiguration('macle.toolkit.configFile')) {
-        toolkitConfig = undefined;
-        toolkitInstallPromise = undefined;
+  try {
+    outputChannel.appendLine('=== Macle extension activating ===');
+
+    context.subscriptions.push(
+      vscode.workspace.onDidChangeConfiguration((event) => {
+        if (event.affectsConfiguration('macle.toolkit.configFile')) {
+          toolkitConfig = undefined;
+          toolkitInstallPromise = undefined;
+        }
+      })
+    );
+
+    outputChannel.appendLine('Registering macle.showWelcomePage command...');
+
+    // Register the welcome page command immediately so it appears in the Command Palette.
+    const showWelcome = vscode.commands.registerCommand('macle.showWelcomePage', async () => {
+      outputChannel.appendLine('macle.showWelcomePage command invoked.');
+      try {
+        await showWelcomePage(context, async () => {
+          outputChannel.appendLine('Welcome page download callback starting...');
+          await ensureToolkitInstalled(context);
+          outputChannel.appendLine('Welcome page download callback complete.');
+        }, true);
+      } catch (error) {
+        outputChannel.appendLine(`Welcome page error: ${String(error)}`);
+        await offerToolkitRecovery(context, error);
       }
-    })
-  );
+    });
+    context.subscriptions.push(showWelcome);
+    outputChannel.appendLine('macle.showWelcomePage command registered.');
 
-  void ensureToolkitInstalled(context).catch((error) => {
-    const message = `Could not set up Macle DevToolkit. It will be retried the next time VS Code starts: ${String(error)}`;
-    outputChannel.appendLine(message);
-    void vscode.window.showWarningMessage(message);
-  });
+    // Auto-show welcome page on first install (deferred so VS Code is ready).
+    setTimeout(async () => {
+      outputChannel.appendLine('setTimeout: showing welcome page (auto-show)...');
+      try {
+        await showWelcomePage(context, async () => {
+          outputChannel.appendLine('Welcome page auto-show download callback starting...');
+          await ensureToolkitInstalled(context);
+          outputChannel.appendLine('Welcome page auto-show download callback complete.');
+        }, true);
+      } catch (error) {
+        outputChannel.appendLine(`Welcome page auto-show error: ${String(error)}`);
+        await offerToolkitRecovery(context, error);
+      }
+    }, 1000);
 
-  context.subscriptions.push(
-    vscode.window.registerTreeDataProvider('macle.tools', new MacleActivityProvider())
-  );
+    context.subscriptions.push(
+      vscode.window.registerTreeDataProvider('macle.tools', new MacleActivityProvider())
+    );
 
-  const diagnosticCollection = vscode.languages.createDiagnosticCollection('macle');
+    const diagnosticCollection = vscode.languages.createDiagnosticCollection('macle');
   const diagnosticsFor = (document: vscode.TextDocument): void =>
     updateDiagnostics(document, diagnosticCollection);
   for (const document of vscode.workspace.textDocuments) diagnosticsFor(document);
@@ -873,6 +1459,7 @@ export function activate(context: vscode.ExtensionContext): void {
   statusBar.command = 'macle.compileAndPreview';
   if (vscode.workspace.workspaceFolders?.length) statusBar.show();
   context.subscriptions.push(
+    showWelcome,
     compileAndPreview,
     compileDev,
     openReport,
@@ -885,6 +1472,10 @@ export function activate(context: vscode.ExtensionContext): void {
       else statusBar.hide();
     })
   );
+  } catch (error) {
+    outputChannel.appendLine(`Macle extension activation failed: ${String(error)}`);
+    void vscode.window.showErrorMessage(`Macle extension activation failed: ${String(error)}`);
+  }
 }
 
 export function deactivate(): void {

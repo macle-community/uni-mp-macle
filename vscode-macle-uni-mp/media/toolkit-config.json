@@ -2,7 +2,7 @@
   "download": {
     "url": "https://developer.ethiotelecom.et/developer_tools/static/download/DevToolkit_26.6.0-LG0001.zip",
     "fileName": "DevToolkit_26.6.0-LG0001.zip",
-    "timeoutMs": 30000,
+    "timeoutMs": 300000,
     "redirectLimit": 5
   },
   "toolkit": {
@@ -11,12 +11,14 @@
     "contentsFolder": "contents",
     "uiFolder": "ui",
     "compilerFolder": "engine-compiler",
-    "simulatorFolder": "simulator"
+    "simulatorFolder": "simulator",
+    "ideFolder": "ide"
   },
   "archives": {
     "ui": "Macle_26.6.0-LG0001_DevSuite_UI.zip",
     "compiler": "Macle_26.6.0-LG0001_Engine_Compiler.zip",
     "simulator": "Macle_26.6.0-LG0001_DevSuite_Simulator.zip",
+    "ide": "Macle_26.6.0-LG0001_DevSuite_IDE.zip",
     "platformPrefix": "Macle_26.6.0-LG0001_DevSuite_Simulator",
     "platformSuffix": ".zip"
   },
