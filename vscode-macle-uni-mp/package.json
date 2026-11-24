@@ -33,8 +33,11 @@
     "onLanguage:maml",
     "onView:macle.tools",
     "onCommand:macle.compileAndPreview",
+    "onCommand:macle.buildAndRun",
+    "onCommand:macle.startWatcher",
     "onCommand:macle.compileDev",
     "onCommand:macle.compileRelease",
+    "onCommand:macle.openWebSimulator",
     "onCommand:macle.openCompatibilityReport",
     "onCommand:macle.configureMauiLibrary",
     "onCommand:macle.createProject",
@@ -66,7 +69,17 @@
     "commands": [
       {
         "command": "macle.compileAndPreview",
-        "title": "Macle: Compile & Preview in Macle",
+        "title": "Macle: Build & Run with Simulator",
+        "category": "Macle"
+      },
+      {
+        "command": "macle.buildAndRun",
+        "title": "Macle: Build & Run with Simulator",
+        "category": "Macle"
+      },
+      {
+        "command": "macle.startWatcher",
+        "title": "Macle: Start Watching Changes",
         "category": "Macle"
       },
       {
@@ -77,6 +90,11 @@
       {
         "command": "macle.compileRelease",
         "title": "Macle: Compile for Macle (Release / Pack)",
+        "category": "Macle"
+      },
+      {
+        "command": "macle.openWebSimulator",
+        "title": "Macle: Open Web Simulator",
         "category": "Macle"
       },
       {

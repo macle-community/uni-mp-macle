@@ -33,6 +33,12 @@ const actions: MacleAction[] = [
     icon: 'tools',
   },
   {
+    label: 'Open Web Simulator',
+    description: 'Launch standalone Macle Web Simulator in browser',
+    command: 'macle.openWebSimulator',
+    icon: 'browser',
+  },
+  {
     label: 'Compatibility Report',
     description: 'View build compatibility findings',
     command: 'macle.openCompatibilityReport',

@@ -53,6 +53,13 @@ export interface ToolkitConfig {
       executableName: string;
     };
   };
+  webSimulator?: {
+    url: string;
+    fileName: string;
+    folder?: string;
+    entry?: string;
+    port?: number;
+  };
 }
 
 let cachedToolkitConfig: ToolkitConfig | undefined;

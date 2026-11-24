@@ -41,5 +41,12 @@
       "simulatorDirectory": "windows",
       "executableName": "macle-simulator.exe"
     }
+  },
+  "webSimulator": {
+    "url": "https://github.com/macle-community/simulator-web/archive/refs/tags/v1.0.0.zip",
+    "fileName": "simulator-web-1.0.0.zip",
+    "folder": "simulator-web",
+    "entry": "src/cli.js",
+    "port": 30001
   }
 }

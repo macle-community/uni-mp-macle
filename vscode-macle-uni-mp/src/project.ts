@@ -70,16 +70,6 @@ export async function createPureMacleProject(
     },
   };
 
-  const packageJson = {
-    name: projectName,
-    version: '1.0.0',
-    description: 'Pure Macle Mini Program',
-    scripts: {
-      'compile:debug': `macle-compiler -s . -t ~/.macle/target/compose/${projectName}/root/debug/app -d`,
-      'compile:release': `macle-compiler -s . -t ~/.macle/target/compile/${projectName}/app`,
-    },
-  };
-
   const appJson = {
     pages: ['pages/index/index'],
     window: {
@@ -107,7 +97,6 @@ export async function createPureMacleProject(
   const gitignore = `node_modules/\ndist/\n.DS_Store\n`;
 
   fs.writeFileSync(path.join(projectRoot, 'project.config.json'), JSON.stringify(projectConfig, null, 2) + '\n', 'utf8');
-  fs.writeFileSync(path.join(projectRoot, 'package.json'), JSON.stringify(packageJson, null, 2) + '\n', 'utf8');
   fs.writeFileSync(path.join(projectRoot, 'app.json'), JSON.stringify(appJson, null, 2) + '\n', 'utf8');
   fs.writeFileSync(path.join(projectRoot, 'app.js'), appJs, 'utf8');
   fs.writeFileSync(path.join(projectRoot, 'app.mass'), appMass, 'utf8');
@@ -283,7 +272,7 @@ export async function configureRunAndDebug(root?: string): Promise<void> {
   const projectName = resolveMacleProjectName(projectRoot);
   const packageJsonPath = path.join(projectRoot, 'package.json');
 
-  if (fs.existsSync(packageJsonPath)) {
+  if (framework !== 'pure-macle' && fs.existsSync(packageJsonPath)) {
     try {
       const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8')) as {
         dependencies?: Record<string, string>;
@@ -292,10 +281,7 @@ export async function configureRunAndDebug(root?: string): Promise<void> {
       };
 
       const scripts = packageJson.scripts ?? {};
-      if (framework === 'pure-macle') {
-        scripts['compile:debug'] ??= `macle-compiler -s . -t ~/.macle/target/compose/${projectName}/root/debug/app -d`;
-        scripts['compile:release'] ??= `macle-compiler -s . -t ~/.macle/target/compile/${projectName}/app`;
-      } else if (framework === 'taro-react') {
+      if (framework === 'taro-react') {
         scripts['dev:h5'] ??= 'npx taro build --type h5 --watch';
         scripts['dev:macle'] ??= 'npx taro build --type macle --watch';
         scripts['build:macle'] ??= 'npx taro build --type macle';
@@ -326,21 +312,25 @@ export async function configureRunAndDebug(root?: string): Promise<void> {
 
   let launchConfigurations: Array<Record<string, unknown>>;
   if (framework === 'pure-macle') {
+    const staleNames = new Set([
+      'Macle: Compile & Debug Pure Macle',
+      'Macle: Build & Run Pure Macle (Terminal)',
+      'Macle: Compile Pure Macle (Debug)',
+      'Macle: Run Pure Macle in Simulator',
+    ]);
+    if (Array.isArray(launch.configurations)) {
+      launch.configurations = launch.configurations.filter(
+        (cfg) => !cfg || typeof cfg !== 'object' || !staleNames.has(String((cfg as Record<string, unknown>).name ?? ''))
+      );
+    }
     launchConfigurations = [
       {
-        name: 'Macle: Compile & Debug Pure Macle',
-        type: 'node',
+        name: 'Macle: Build & Run with Simulator',
+        type: 'pwa-chrome',
         request: 'launch',
-        runtimeExecutable: 'macle-compiler',
-        runtimeArgs: [
-          '-s',
-          '${workspaceFolder}',
-          '-t',
-          `\${env:HOME}/.macle/target/compose/${projectName}/root/debug/app`,
-          '-d',
-        ],
-        cwd: '${workspaceFolder}',
-        console: 'integratedTerminal',
+        url: 'http://localhost:30001',
+        webRoot: '${workspaceFolder}',
+        preLaunchTask: 'Macle: Build & Run with Simulator',
       },
     ];
   } else if (framework === 'taro-react') {
@@ -413,13 +403,37 @@ export async function configureRunAndDebug(root?: string): Promise<void> {
       {
         label: 'Macle: Compile Pure Macle (Debug)',
         type: 'shell',
-        command: `macle-compiler -s "\${workspaceFolder}" -t "\${env:HOME}/.macle/target/compose/${projectName}/root/debug/app" -d`,
+        command: `macle-compiler -s "\${workspaceFolder}" -t "\${userHome}/.macle/target/compose/${projectName}/root/debug/app" -d`,
+        problemMatcher: [],
+      },
+      {
+        label: 'Macle: Start Web Simulator',
+        type: 'shell',
+        command: `npx --yes @macle-community/simulator-web -s "\${userHome}/.macle/target/compose/${projectName}/root/debug/app" -p 30001 -w -o`,
+        isBackground: true,
+        problemMatcher: {
+          owner: 'macle-simulator',
+          pattern: { regexp: '^' },
+          background: {
+            activeOnStart: true,
+            beginsPattern: '.*(?:Macle Web Simulator|Starting Macle Web Simulator).*',
+            endsPattern: '.*(?:Local URL|http://localhost).*',
+          },
+        },
+      },
+      {
+        label: 'Macle: Build & Run with Simulator',
+        dependsOrder: 'sequence',
+        dependsOn: [
+          'Macle: Compile Pure Macle (Debug)',
+          'Macle: Start Web Simulator',
+        ],
         problemMatcher: [],
       },
       {
         label: 'Macle: Compile Pure Macle (Release)',
         type: 'shell',
-        command: `macle-compiler -s "\${workspaceFolder}" -t "\${env:HOME}/.macle/target/compile/${projectName}/app"`,
+        command: `macle-compiler -s "\${workspaceFolder}" -t "\${userHome}/.macle/target/compile/${projectName}/app"`,
         problemMatcher: [],
       },
     ];
