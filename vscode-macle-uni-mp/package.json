@@ -1,7 +1,7 @@
 {
   "name": "vscode-macle-uni-mp",
   "displayName": "Telebirr MiniApp Dev Kit",
-  "description": "Create Vue uni-app or React Taro projects, compile for Macle, inspect compatibility, and run or debug them in VS Code.",
+  "description": "Create Vue uni-app, React Taro, or Pure Macle projects, compile for Macle, inspect compatibility, and run or debug them in VS Code.",
   "version": "1.0.0",
   "publisher": "macle-community",
   "license": "MIT",
@@ -21,16 +21,20 @@
     "lib/**",
     "media/**",
     "snippets/**",
-    "README.md"
+    "README.md",
+    "LICENSE",
+    "libarchive.wasm"
   ],
   "activationEvents": [
     "onStartupFinished",
     "onLanguage:vue",
     "onLanguage:javascript",
     "onLanguage:typescript",
+    "onLanguage:maml",
     "onView:macle.tools",
     "onCommand:macle.compileAndPreview",
     "onCommand:macle.compileDev",
+    "onCommand:macle.compileRelease",
     "onCommand:macle.openCompatibilityReport",
     "onCommand:macle.configureMauiLibrary",
     "onCommand:macle.createProject",
@@ -67,7 +71,12 @@
       },
       {
         "command": "macle.compileDev",
-        "title": "Macle: Compile uni-app for Macle",
+        "title": "Macle: Compile for Macle",
+        "category": "Macle"
+      },
+      {
+        "command": "macle.compileRelease",
+        "title": "Macle: Compile for Macle (Release / Pack)",
         "category": "Macle"
       },
       {
@@ -108,10 +117,19 @@
           "type": "string",
           "default": "",
           "description": "Optional absolute or extension-relative path to a Macle toolkit JSON configuration file."
+        },
+        "macle.compiler.path": {
+          "type": "string",
+          "default": "",
+          "description": "Optional path to a custom macle-compiler CLI executable or engine-compiler index.js."
         }
       }
     },
     "snippets": [
+      {
+        "language": "maml",
+        "path": "./snippets/macle.code-snippets"
+      },
       {
         "language": "javascript",
         "path": "./snippets/macle.code-snippets"

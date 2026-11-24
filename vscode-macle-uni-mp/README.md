@@ -2,7 +2,11 @@
 
 VS Code integration for the `@macle/uni-mp` uni-app compatibility plugin.
 
-Open the **Macle** icon in the Activity Bar for quick actions: **New Project**, **Run & Debug Project**, **Compile & Preview**, **Compile for Macle**, **Compatibility Report**, and **Configure MAUI UI Library**. New Project creates React + Taro or Vue 3 + uni-app projects. Run & Debug Project adds browser launch profiles and Macle development profiles to `.vscode/launch.json` and `.vscode/tasks.json`. You can also use **Macle: Compile & Preview in Macle** or the status-bar button to start a development build and hand it off to the official Macle MiniProgram Tools extension.
+Open the **Macle** icon in the Activity Bar for quick actions: **New Project**, **Run & Debug Project**, **Compile & Preview**, **Compile for Macle**, **Compatibility Report**, and **Configure MAUI UI Library**. New Project creates Pure Macle, React + Taro, or Vue 3 + uni-app projects. Run & Debug Project adds launch and development task profiles to `.vscode/launch.json` and `.vscode/tasks.json`. You can also use **Macle: Compile & Preview in Macle** or the status-bar button to start a development build and hand it off to the official Macle MiniProgram Tools extension.
+
+For Pure Macle projects, the extension invokes `macle-compiler` directly and compiles to standard Macle targets under `~/.macle/target/`:
+- **Simulator / Debug**: `~/.macle/target/compose/<projectName>/root/debug/app`
+- **Release / Pack**: `~/.macle/target/compile/<projectName>/app`
 
 The extension includes the Macle compiler plugin bundle, live API/component diagnostics with Macle documentation links, Vue built-in and MAUI component/known-attribute IntelliSense, guard-only quick fixes, conditional-compilation snippets and decorations, and a report webview with source-map navigation.
 

@@ -1,4 +1,6 @@
 node_modules/
 lib/
 fs-extra.rar
-open.rar*.vsix
+open.rar
+*.vsix
+*.wasm

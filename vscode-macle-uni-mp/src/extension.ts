@@ -11,7 +11,15 @@ import { openCompatibilityReport } from './report';
 import { createMauiLibraryPlan, installMauiLibrary } from './maui-library';
 import { MacleActivityProvider } from './activity';
 import { resolveUniCli } from './uni-cli';
-import { configureRunAndDebug, createMacleProject } from './project';
+import { configureRunAndDebug, createMacleProject, detectProjectFramework } from './project';
+import {
+  ToolkitConfig,
+  getMacleTargetPaths,
+  loadToolkitConfig,
+  resetToolkitConfigCache,
+  resolveMacleCompiler,
+  toolkitConfigPath,
+} from './compiler-cli';
 import { showWelcomePage } from './welcome';
 
 const outputChannel = vscode.window.createOutputChannel('Macle uni-app');
@@ -22,70 +30,6 @@ let toolkitInstallPromise: Promise<{
   simulatorInstalled: boolean;
   officialExtensionInstalled: boolean;
 }> | undefined;
-
-interface ToolkitConfig {
-  download: { url: string; fileName: string; timeoutMs: number; redirectLimit: number };
-  toolkit: {
-    version: string;
-    storageFolder: string;
-    contentsFolder: string;
-    uiFolder: string;
-    compilerFolder: string;
-    simulatorFolder: string;
-    ideFolder: string;
-  };
-  archives: {
-    ui: string;
-    compiler: string;
-    simulator: string;
-    ide: string;
-    platformPrefix: string;
-    platformSuffix: string;
-  };
-  officialExtension: {
-    id: string;
-    simulatorCommand: string;
-    relativeSimulatorDirectory: string[];
-    zipExtractorModule: string;
-  };
-  platforms: {
-    darwin: {
-      archiveLabel: string;
-      simulatorDirectory: string;
-      appName: string;
-      executableRelativePath: string[];
-    };
-    win32: {
-      archiveLabel: string;
-      simulatorDirectory: string;
-      executableName: string;
-    };
-  };
-}
-
-let toolkitConfig: ToolkitConfig | undefined;
-
-function toolkitConfigPath(context: vscode.ExtensionContext): string {
-  const override = vscode.workspace
-    .getConfiguration('macle.toolkit')
-    .get<string>('configFile', '')
-    .trim();
-  if (override) {
-    return path.isAbsolute(override)
-      ? override
-      : path.resolve(context.extensionPath, override);
-  }
-  return path.join(context.extensionPath, 'media', 'toolkit-config.json');
-}
-
-function loadToolkitConfig(context: vscode.ExtensionContext): ToolkitConfig {
-  if (toolkitConfig) return toolkitConfig;
-  const configPath = toolkitConfigPath(context);
-  const parsed = JSON.parse(fs.readFileSync(configPath, 'utf8')) as ToolkitConfig;
-  toolkitConfig = parsed;
-  return parsed;
-}
-
 
 class DownloadInterruptedError extends Error {}
 
@@ -98,7 +42,7 @@ function downloadToolkitAttempt(
   token?: vscode.CancellationToken
 ): Promise<number | undefined> {
   return new Promise((resolve, reject) => {
-    const config = toolkitConfig;
+    const config = loadToolkitConfig();
     if (!config) {
       reject(new Error('The toolkit configuration was not loaded.'));
       return;
@@ -304,16 +248,25 @@ async function extractZipWithLibarchive(
   source: string,
   destination: string
 ): Promise<void> {
-  let wasmPath = path.join(
-    context.extensionPath,
-    'node_modules',
-    'libarchive-wasm',
-    'dist',
-    'libarchive.wasm'
-  );
-  if (!fs.existsSync(wasmPath)) {
-    // Bundled layouts may ship the wasm next to the compiled extension.
-    wasmPath = path.join(path.dirname(__dirname), 'libarchive.wasm');
+  const candidates = [
+    path.join(__dirname, 'libarchive.wasm'),
+    path.join(context.extensionPath, 'lib', 'libarchive.wasm'),
+    path.join(context.extensionPath, 'libarchive.wasm'),
+    path.join(path.dirname(__dirname), 'libarchive.wasm'),
+    path.join(
+      context.extensionPath,
+      'node_modules',
+      'libarchive-wasm',
+      'dist',
+      'libarchive.wasm'
+    ),
+  ];
+
+  const wasmPath = candidates.find((candidate) => fs.existsSync(candidate));
+  if (!wasmPath) {
+    throw new Error(
+      `libarchive.wasm was not found in the extension bundle. Checked: ${candidates.join(', ')}`
+    );
   }
   const wasmBinary = await fs.promises.readFile(wasmPath);
 
@@ -469,13 +422,15 @@ async function extractZip(
     extractZipError = error;
     outputChannel.appendLine(`extract-zip failed for ${path.basename(source)}: ${String(error)}`);
   }
+  let libarchiveError: unknown;
   try {
     await extractZipWithLibarchive(context, source, destination);
     outputChannel.appendLine(`Extracted ${path.basename(source)} with libarchive-wasm.`);
     return;
-  } catch (libarchiveError) {
+  } catch (error) {
+    libarchiveError = error;
     outputChannel.appendLine(
-      `libarchive-wasm failed for ${path.basename(source)}: ${String(libarchiveError)}`
+      `libarchive-wasm failed for ${path.basename(source)}: ${String(error)}`
     );
   }
   try {
@@ -1149,17 +1104,162 @@ async function selectUniAppProject(): Promise<{ root: string; cli: NonNullable<R
   return { root, cli };
 }
 
+async function compilePureMacle(
+  root: string,
+  preview: boolean,
+  context: vscode.ExtensionContext
+): Promise<void> {
+  const compiler = resolveMacleCompiler(context);
+  if (!compiler) {
+    void vscode.window.showErrorMessage(
+      'Could not find macle-compiler. Ensure macle-compiler is installed or configure macle.compiler.path in settings.'
+    );
+    return;
+  }
+
+  const { debugApp } = getMacleTargetPaths(root);
+  fs.mkdirSync(debugApp, { recursive: true });
+
+  const args = [...compiler.argsPrefix, '-s', root, '-t', debugApp, '-d'];
+  outputChannel.show(true);
+  outputChannel.appendLine(`Starting Macle Compiler (Debug) in ${root}`);
+  outputChannel.appendLine(`Command: ${compiler.command} ${args.join(' ')}`);
+  outputChannel.appendLine(`Target: ${debugApp}`);
+
+  const child = spawn(compiler.command, args, {
+    cwd: root,
+    shell: process.platform === 'win32',
+  });
+  buildProcess = child;
+
+  child.stdout?.on('data', (data: Buffer) => outputChannel.append(data.toString()));
+  child.stderr?.on('data', (data: Buffer) => outputChannel.append(data.toString()));
+  child.on('error', (error) => {
+    if (buildProcess === child) buildProcess = undefined;
+    outputChannel.appendLine(`Could not start macle-compiler: ${error.message}`);
+    void vscode.window.showErrorMessage(`Could not start macle-compiler: ${error.message}`);
+  });
+  child.on('exit', async (code) => {
+    if (buildProcess === child) buildProcess = undefined;
+    outputChannel.appendLine(`macle-compiler exited with code ${code ?? 0}`);
+    if (code === 0) {
+      void vscode.window.showInformationMessage(`Pure Macle compiled successfully to ${debugApp}`);
+      if (preview) {
+        await openMacleSimulator(debugApp, context);
+      }
+    } else {
+      void vscode.window.showErrorMessage(
+        `Pure Macle compilation failed (exit code ${code}). Check Macle output channel.`
+      );
+    }
+  });
+}
+
+async function compileReleaseBuild(context: vscode.ExtensionContext): Promise<void> {
+  const preferredRoot = projectRoot();
+  if (!preferredRoot) {
+    void vscode.window.showErrorMessage('Open a project folder before compiling for Macle.');
+    return;
+  }
+  if (buildProcess && buildProcess.exitCode === null) {
+    void vscode.window.showInformationMessage('A Macle build is already running.');
+    return;
+  }
+
+  const framework = detectProjectFramework(preferredRoot);
+  if (framework === 'pure-macle') {
+    const compiler = resolveMacleCompiler(context);
+    if (!compiler) {
+      void vscode.window.showErrorMessage(
+        'Could not find macle-compiler. Ensure macle-compiler is installed or configure macle.compiler.path in settings.'
+      );
+      return;
+    }
+    const { releaseApp } = getMacleTargetPaths(preferredRoot);
+    fs.mkdirSync(releaseApp, { recursive: true });
+
+    const args = [...compiler.argsPrefix, '-s', preferredRoot, '-t', releaseApp];
+    outputChannel.show(true);
+    outputChannel.appendLine(`Starting Macle Compiler (Release) in ${preferredRoot}`);
+    outputChannel.appendLine(`Command: ${compiler.command} ${args.join(' ')}`);
+    outputChannel.appendLine(`Target: ${releaseApp}`);
+
+    const child = spawn(compiler.command, args, {
+      cwd: preferredRoot,
+      shell: process.platform === 'win32',
+    });
+    buildProcess = child;
+    child.stdout?.on('data', (data: Buffer) => outputChannel.append(data.toString()));
+    child.stderr?.on('data', (data: Buffer) => outputChannel.append(data.toString()));
+    child.on('error', (error) => {
+      if (buildProcess === child) buildProcess = undefined;
+      outputChannel.appendLine(`Could not start macle-compiler: ${error.message}`);
+      void vscode.window.showErrorMessage(`Could not start macle-compiler: ${error.message}`);
+    });
+    child.on('exit', (code) => {
+      if (buildProcess === child) buildProcess = undefined;
+      outputChannel.appendLine(`macle-compiler exited with code ${code ?? 0}`);
+      if (code === 0) {
+        void vscode.window.showInformationMessage(`Pure Macle release build succeeded: ${releaseApp}`);
+      } else {
+        void vscode.window.showErrorMessage(
+          `Pure Macle release build failed (exit code ${code}). Check Macle output channel.`
+        );
+      }
+    });
+  } else {
+    const cli = resolveUniCli(preferredRoot);
+    if (!cli) {
+      void vscode.window.showErrorMessage(`No uni CLI found in "${preferredRoot}".`);
+      return;
+    }
+    const outputDir = path.resolve(preferredRoot, 'dist/build/mp-macle');
+    const env = {
+      ...process.env,
+      UNI_PLATFORM: 'mp-weixin',
+      UNI_CUSTOM_PLATFORM: 'mp-macle',
+      UNI_OUTPUT_DIR: outputDir,
+      NODE_ENV: 'production',
+    };
+    outputChannel.show(true);
+    outputChannel.appendLine(`Starting release build in ${preferredRoot}`);
+    const child = spawn(cli.command, [...cli.argsPrefix, 'build', '-p', 'mp-weixin'], {
+      cwd: preferredRoot,
+      env,
+      shell: cli.shell,
+    });
+    buildProcess = child;
+    child.stdout?.on('data', (data: Buffer) => outputChannel.append(data.toString()));
+    child.stderr?.on('data', (data: Buffer) => outputChannel.append(data.toString()));
+    child.on('exit', (code) => {
+      if (buildProcess === child) buildProcess = undefined;
+      outputChannel.appendLine(`uni CLI exited with code ${code ?? 0}`);
+      if (code === 0) {
+        void vscode.window.showInformationMessage(`Build succeeded: ${outputDir}`);
+      } else {
+        void vscode.window.showErrorMessage(`Build failed (exit code ${code}).`);
+      }
+    });
+  }
+}
+
 async function startBuild(
   preview: boolean,
   context: vscode.ExtensionContext
 ): Promise<void> {
   const preferredRoot = projectRoot();
   if (!preferredRoot) {
-    void vscode.window.showErrorMessage('Open a uni-app project folder before compiling for Macle.');
+    void vscode.window.showErrorMessage('Open a project folder before compiling for Macle.');
     return;
   }
   if (buildProcess && buildProcess.exitCode === null) {
     void vscode.window.showInformationMessage('A Macle development build is already running.');
+    return;
+  }
+
+  const framework = detectProjectFramework(preferredRoot);
+  if (framework === 'pure-macle') {
+    await compilePureMacle(preferredRoot, preview, context);
     return;
   }
 
@@ -1342,7 +1442,7 @@ export function activate(context: vscode.ExtensionContext): void {
     context.subscriptions.push(
       vscode.workspace.onDidChangeConfiguration((event) => {
         if (event.affectsConfiguration('macle.toolkit.configFile')) {
-          toolkitConfig = undefined;
+          resetToolkitConfigCache();
           toolkitInstallPromise = undefined;
         }
       })
@@ -1435,6 +1535,9 @@ export function activate(context: vscode.ExtensionContext): void {
   const compileDev = vscode.commands.registerCommand('macle.compileDev', () =>
     startBuild(false, context)
   );
+  const compileRelease = vscode.commands.registerCommand('macle.compileRelease', () =>
+    compileReleaseBuild(context)
+  );
   const openReport = vscode.commands.registerCommand('macle.openCompatibilityReport', async () => {
     const root = projectRoot();
     if (!root) {
@@ -1455,13 +1558,14 @@ export function activate(context: vscode.ExtensionContext): void {
   );
   const statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 20);
   statusBar.text = '$(play) Macle Preview';
-  statusBar.tooltip = 'Compile uni-app and open the Macle simulator';
+  statusBar.tooltip = 'Compile and open the Macle simulator';
   statusBar.command = 'macle.compileAndPreview';
   if (vscode.workspace.workspaceFolders?.length) statusBar.show();
   context.subscriptions.push(
     showWelcome,
     compileAndPreview,
     compileDev,
+    compileRelease,
     openReport,
     setupMaui,
     createProject,

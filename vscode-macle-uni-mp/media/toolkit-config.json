@@ -11,6 +11,7 @@
     "contentsFolder": "contents",
     "uiFolder": "ui",
     "compilerFolder": "engine-compiler",
+    "compilerExecutable": "bin/index.js",
     "simulatorFolder": "simulator",
     "ideFolder": "ide"
   },

@@ -1,10 +1,24 @@
 import { build } from 'esbuild';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const extensionDir = path.join(rootDir, 'vscode-macle-uni-mp');
 const extensionLibDir = path.join(extensionDir, 'lib');
+
+const wasmSource = path.join(
+  extensionDir,
+  'node_modules',
+  'libarchive-wasm',
+  'dist',
+  'libarchive.wasm'
+);
+if (fs.existsSync(wasmSource)) {
+  fs.mkdirSync(extensionLibDir, { recursive: true });
+  fs.copyFileSync(wasmSource, path.join(extensionLibDir, 'libarchive.wasm'));
+  fs.copyFileSync(wasmSource, path.join(extensionDir, 'libarchive.wasm'));
+}
 
 await build({
   entryPoints: [path.join(extensionDir, 'src', 'extension.ts')],

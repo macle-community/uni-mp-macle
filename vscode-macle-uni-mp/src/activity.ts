@@ -10,7 +10,7 @@ interface MacleAction {
 const actions: MacleAction[] = [
   {
     label: 'New Project',
-    description: 'Create a React Taro or Vue uni-app project',
+    description: 'Create a React Taro, Vue uni-app, or Pure Macle project',
     command: 'macle.createProject',
     icon: 'new-folder',
   },
