@@ -1,7 +1,8 @@
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn, execSync, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
 import https from 'node:https';
+import os from 'node:os';
 import path from 'node:path';
 import * as vscode from 'vscode';
 import extractZipModule from 'extract-zip';
@@ -15,6 +16,7 @@ import { resolveUniCli } from './uni-cli';
 import { configureRunAndDebug, createMacleProject, detectProjectFramework } from './project';
 import {
   ToolkitConfig,
+  expandUserPath,
   getMacleTargetPaths,
   loadToolkitConfig,
   resetToolkitConfigCache,
@@ -33,19 +35,21 @@ let isPureMacleRebuilding = false;
 let pendingPureMacleRebuild = false;
 let statusBarItem: vscode.StatusBarItem | undefined;
 
-function notifySimulatorReload(port = 30001): void {
-  const req = http.request(
-    {
-      hostname: '127.0.0.1',
-      port,
-      path: '/api/recompile',
-      method: 'POST',
-      timeout: 1500,
-    },
-    () => {}
-  );
-  req.on('error', () => {});
-  req.end();
+function notifySimulatorReload(port = 30000): void {
+  for (const p of [port, 30001, 30002]) {
+    const req = http.request(
+      {
+        hostname: '127.0.0.1',
+        port: p,
+        path: '/api/recompile',
+        method: 'POST',
+        timeout: 1000,
+      },
+      () => {}
+    );
+    req.on('error', () => {});
+    req.end();
+  }
 }
 
 function updateStatusBarWatchState(watching: boolean, compiling = false): void {
@@ -923,6 +927,313 @@ async function openWebSimulator(
   }
 }
 
+interface ResolvedLinuxSimulator {
+  dir: string;
+  executable?: string;
+  webScript: string;
+}
+
+async function findLinuxDesktopSimulator(
+  context: vscode.ExtensionContext
+): Promise<{ dir: string; executable: string } | undefined> {
+  const config = loadToolkitConfig(context);
+  const macleConfig = vscode.workspace.getConfiguration('macle');
+  const simName = config.platforms?.linux?.executableName || 'macle-simulator';
+
+  // 1. User setting: macle.simulator.path
+  const customSimPath = macleConfig.get<string>('simulator.path')?.trim();
+  if (customSimPath) {
+    const expanded = expandUserPath(customSimPath);
+    if (fs.existsSync(expanded)) {
+      const dir = fs.statSync(expanded).isDirectory() ? expanded : path.dirname(expanded);
+      const exe = fs.statSync(expanded).isDirectory() ? path.join(expanded, simName) : expanded;
+      if (fs.existsSync(exe)) {
+        return { dir, executable: exe };
+      }
+    }
+  }
+
+  // 2. Local toolkits (setting or default search paths)
+  const localSetting = macleConfig.get<string>('toolkit.localPath')?.trim();
+  const localState = context.globalState.get<string>('macle.toolkit.localPath');
+  const toolkitRoots = [
+    localSetting ? expandUserPath(localSetting) : '',
+    localState ? expandUserPath(localState) : '',
+    path.join(os.homedir(), 'macle', 'DevToolkit_26.6.0'),
+    path.join(os.homedir(), 'macle', 'DevToolkit_25.9.0'),
+    path.join(context.globalStorageUri.fsPath, config.toolkit.storageFolder, config.toolkit.version),
+  ].filter(Boolean);
+
+  for (const tkRoot of toolkitRoots) {
+    if (!fs.existsSync(tkRoot)) continue;
+    const candidates = [
+      path.join(tkRoot, 'DevToolkit_26.6.0-LG0001', 'Macle_26.6.0-LG0001_DevSuite_Simulator', 'Macle_26.6.0-LG0001_DevSuite_Simulator_Linux', simName),
+      path.join(tkRoot, 'Macle_25.9.0_DevSuite_Simulator', 'Macle_25.9.0_DevSuite_Simulator_Linux', simName),
+      path.join(tkRoot, 'simulator', 'linux', simName),
+      path.join(tkRoot, 'simulator', 'Macle_26.6.0-LG0001_DevSuite_Simulator_Linux', simName),
+      path.join(tkRoot, 'Macle_26.6.0-LG0001_DevSuite_Simulator_Linux', simName),
+      path.join(tkRoot, 'Macle_25.9.0_DevSuite_Simulator_Linux', simName),
+      path.join(tkRoot, 'simulator', simName),
+    ];
+    for (const cand of candidates) {
+      if (fs.existsSync(cand)) {
+        const binCand = path.join(path.dirname(cand), `${simName}-bin`);
+        if (fs.existsSync(binCand)) {
+          return { dir: path.dirname(cand), executable: cand };
+        }
+      }
+    }
+  }
+
+  // 3. System PATH or ~/.local/bin/macle-simulator
+  const userLocalExe = path.join(os.homedir(), '.local', 'bin', simName);
+  if (fs.existsSync(userLocalExe)) {
+    try {
+      const real = fs.realpathSync(userLocalExe);
+      if (fs.existsSync(path.join(path.dirname(real), `${simName}-bin`))) {
+        return { dir: path.dirname(real), executable: userLocalExe };
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  try {
+    const whichOut = execSync(`which ${simName} 2>/dev/null`, { encoding: 'utf8' }).trim();
+    if (whichOut && fs.existsSync(whichOut)) {
+      const real = fs.realpathSync(whichOut);
+      if (fs.existsSync(path.join(path.dirname(real), `${simName}-bin`))) {
+        return { dir: path.dirname(real), executable: whichOut };
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  return undefined;
+}
+
+async function resolveLinuxSimulatorEntry(
+  context: vscode.ExtensionContext
+): Promise<ResolvedLinuxSimulator | undefined> {
+  const config = loadToolkitConfig(context);
+  const storagePath = context.globalStorageUri.fsPath;
+  const folder = config.platforms?.linux?.folder || 'simulator-linux';
+  const webEntry = config.platforms?.linux?.webEntry || 'macle-web-simulator.js';
+  const execName = config.platforms?.linux?.executableName || 'macle-simulator';
+
+  // Check desktop simulator first
+  const desktopSim = await findLinuxDesktopSimulator(context);
+
+  const baseDir = path.join(storagePath, folder);
+  const candidateDirs = [
+    ...(desktopSim ? [desktopSim.dir] : []),
+    baseDir,
+    path.join(baseDir, 'simulator-linux-v-1.0.0'),
+    path.join(storagePath, 'toolkit', config.toolkit.version, 'simulator', 'linux'),
+    path.join(storagePath, 'toolkit', config.toolkit.version, 'simulator', 'linux', 'simulator-linux-v-1.0.0'),
+  ];
+
+  if (fs.existsSync(baseDir)) {
+    try {
+      const entries = fs.readdirSync(baseDir, { withFileTypes: true });
+      for (const ent of entries) {
+        if (ent.isDirectory()) {
+          candidateDirs.push(path.join(baseDir, ent.name));
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  for (const dir of candidateDirs) {
+    const webScript = path.join(dir, webEntry);
+    if (fs.existsSync(webScript)) {
+      const execPath = desktopSim?.executable || path.join(dir, execName);
+      return {
+        dir,
+        webScript,
+        executable: fs.existsSync(execPath) ? execPath : undefined,
+      };
+    }
+  }
+
+  if (desktopSim) {
+    return {
+      dir: desktopSim.dir,
+      webScript: path.join(desktopSim.dir, webEntry),
+      executable: desktopSim.executable,
+    };
+  }
+
+  return undefined;
+}
+
+async function ensureLinuxSimulatorInstalled(
+  context: vscode.ExtensionContext
+): Promise<ResolvedLinuxSimulator> {
+  const existing = await resolveLinuxSimulatorEntry(context);
+  if (existing) {
+    outputChannel.appendLine(`Found Macle Linux Simulator at ${existing.webScript}`);
+    return existing;
+  }
+
+  const config = loadToolkitConfig(context);
+  const linuxConfig = config.platforms?.linux;
+  const url =
+    linuxConfig?.url ||
+    'https://github.com/macle-community/simulator-linux/archive/refs/tags/v-1.0.0.zip';
+  const fileName = linuxConfig?.fileName || 'simulator-linux-v-1.0.0.zip';
+  const targetFolder = linuxConfig?.folder || 'simulator-linux';
+
+  const storagePath = context.globalStorageUri.fsPath;
+  await fs.promises.mkdir(storagePath, { recursive: true });
+
+  const archivePath = path.join(storagePath, fileName);
+  const destinationDir = path.join(storagePath, targetFolder);
+
+  outputChannel.appendLine(`Downloading Macle Linux Simulator from ${url}...`);
+  await vscode.window.withProgress(
+    {
+      location: vscode.ProgressLocation.Notification,
+      title: 'Downloading Macle Linux Simulator',
+      cancellable: false,
+    },
+    async (progress) => {
+      progress.report({ message: 'Downloading Linux Simulator...' });
+      await downloadToolkitFile(
+        new URL(url),
+        archivePath,
+        progress,
+        { received: 0, reportedPercent: 0 },
+        0
+      );
+      progress.report({ message: 'Extracting Linux Simulator...' });
+      outputChannel.appendLine(`Extracting Linux Simulator to ${destinationDir}...`);
+      await extractZip(context, archivePath, destinationDir);
+    }
+  );
+
+  const resolved = await resolveLinuxSimulatorEntry(context);
+  if (!resolved) {
+    throw new Error(`Linux simulator extracted at ${destinationDir}, but entry point could not be located.`);
+  }
+
+  if (resolved.executable) {
+    try {
+      await fs.promises.chmod(resolved.executable, 0o755);
+    } catch {
+      // ignore
+    }
+  }
+
+  outputChannel.appendLine(`Macle Linux Simulator installed at: ${resolved.webScript}`);
+  return resolved;
+}
+
+async function openLinuxSimulator(
+  outputDir: string,
+  context: vscode.ExtensionContext
+): Promise<void> {
+  try {
+    const sim = await ensureLinuxSimulatorInstalled(context);
+    const config = loadToolkitConfig(context);
+    const defaultPort = config.platforms?.linux?.port || 30000;
+
+    if (webSimulatorProcess && webSimulatorProcess.exitCode === null) {
+      outputChannel.appendLine(`Macle Simulator is already running at http://localhost:${defaultPort}`);
+      void vscode.env.openExternal(vscode.Uri.parse(`http://localhost:${defaultPort}`));
+      void vscode.window.showInformationMessage(
+        `Macle Simulator is already running at http://localhost:${defaultPort}`,
+        'Open in Browser'
+      ).then((choice) => {
+        if (choice === 'Open in Browser') {
+          void vscode.env.openExternal(vscode.Uri.parse(`http://localhost:${defaultPort}`));
+        }
+      });
+      return;
+    }
+
+    const preferredRoot = projectRoot() || outputDir;
+    outputChannel.show(true);
+    outputChannel.appendLine(`Starting Macle Linux Simulator...`);
+    outputChannel.appendLine(`Source: ${outputDir}`);
+    outputChannel.appendLine(`Root: ${preferredRoot}`);
+
+    const simType = vscode.workspace.getConfiguration('macle').get<string>('simulator.type', 'platform');
+    const hasDesktopBin = sim.executable && (
+      fs.existsSync(path.join(sim.dir, 'macle-simulator-bin')) ||
+      (sim.executable.endsWith('macle-simulator') && fs.existsSync(sim.executable))
+    );
+    const hasDisplay = Boolean(process.env.DISPLAY || process.env.WAYLAND_DISPLAY);
+
+    let child: ChildProcess;
+    let serverPort = defaultPort;
+
+    if (simType !== 'web' && hasDesktopBin && hasDisplay && sim.executable) {
+      outputChannel.appendLine(`Launching native Linux desktop simulator: ${sim.executable}`);
+      child = spawn(sim.executable, ['-s', outputDir, '-r', preferredRoot], {
+        cwd: sim.dir,
+        env: process.env,
+      });
+    } else {
+      outputChannel.appendLine(`Launching Linux web simulator: ${sim.webScript}`);
+      child = spawn(process.execPath || 'node', [sim.webScript, '-s', outputDir, '-r', preferredRoot], {
+        cwd: sim.dir,
+        env: process.env,
+      });
+    }
+
+    webSimulatorProcess = child;
+    let browserOpened = false;
+
+    child.stdout?.on('data', (data: Buffer) => {
+      const text = data.toString();
+      outputChannel.append(text);
+      const urlMatch = text.match(/http:\/\/localhost:(\d+)\/?/);
+      if (urlMatch) {
+        serverPort = parseInt(urlMatch[1], 10);
+      }
+      if (!browserOpened && (text.includes('http://localhost') || text.includes('Web Simulator running'))) {
+        browserOpened = true;
+        void vscode.env.openExternal(vscode.Uri.parse(`http://localhost:${serverPort}/`));
+      }
+    });
+
+    child.stderr?.on('data', (data: Buffer) => outputChannel.append(data.toString()));
+
+    child.on('error', (err) => {
+      if (webSimulatorProcess === child) webSimulatorProcess = undefined;
+      outputChannel.appendLine(`Failed to launch Linux Simulator: ${err.message}`);
+      void vscode.window.showErrorMessage(`Failed to launch Linux Simulator: ${err.message}`);
+    });
+
+    child.on('exit', (code) => {
+      if (webSimulatorProcess === child) webSimulatorProcess = undefined;
+      outputChannel.appendLine(`Linux Simulator stopped (exit code ${code ?? 0}).`);
+    });
+
+    setTimeout(() => {
+      if (!browserOpened && webSimulatorProcess === child) {
+        browserOpened = true;
+        void vscode.env.openExternal(vscode.Uri.parse(`http://localhost:${serverPort}/`));
+      }
+    }, 2000);
+
+    const choice = await vscode.window.showInformationMessage(
+      `Macle Linux Simulator started at http://localhost:${serverPort}/`,
+      'Open in Browser'
+    );
+    if (choice === 'Open in Browser') {
+      void vscode.env.openExternal(vscode.Uri.parse(`http://localhost:${serverPort}/`));
+    }
+  } catch (error) {
+    outputChannel.appendLine(`Could not start Macle Linux Simulator: ${String(error)}. Falling back to Web Simulator...`);
+    await openWebSimulator(outputDir, context);
+  }
+}
+
 async function installPlatformSimulator(
   context: vscode.ExtensionContext,
   toolkitRoot: string,
@@ -931,6 +1242,17 @@ async function installPlatformSimulator(
   const config = loadToolkitConfig(context);
 
   const platform = process.platform;
+  if (platform === 'linux') {
+    outputChannel.appendLine(`Installing Linux Simulator (v-1.0.0)...`);
+    try {
+      await ensureLinuxSimulatorInstalled(context);
+      return true;
+    } catch (err) {
+      outputChannel.appendLine(`Linux Simulator setup notice: ${String(err)}. Falling back to web simulator...`);
+      await ensureWebSimulatorInstalled(context);
+      return true;
+    }
+  }
   if (platform !== 'darwin' && platform !== 'win32') {
     outputChannel.appendLine(
       `No official desktop simulator for ${platform}. Installing Macle Web Simulator as default...`
@@ -1334,44 +1656,122 @@ async function waitForOutputChange(
   return false;
 }
 
+async function openDesktopSimulator(
+  outputDir: string,
+  context: vscode.ExtensionContext
+): Promise<boolean> {
+  const platform = process.platform;
+  const config = loadToolkitConfig(context);
+
+  // 1. If official extension is available, try invoking its simulator command
+  const officialExtension = vscode.extensions.getExtension(config.officialExtension.id);
+  if (officialExtension) {
+    try {
+      if (!officialExtension.isActive) {
+        await officialExtension.activate();
+      }
+      await vscode.commands.executeCommand(config.officialExtension.simulatorCommand);
+      outputChannel.appendLine(`Invoked official Macle extension simulator command.`);
+      void vscode.window.showInformationMessage(
+        `Macle DevTools simulator opened for ${outputDir}`
+      );
+      return true;
+    } catch (err) {
+      outputChannel.appendLine(`Official extension simulator command could not be invoked: ${String(err)}`);
+    }
+  }
+
+  // 2. Direct launch of the platform desktop simulator executable from toolkit
+  const toolkit = await ensureToolkitInstalled(context);
+  if (!toolkit.simulatorInstalled) {
+    return false;
+  }
+
+  const storagePath = context.globalStorageUri.fsPath;
+  const toolkitRoot = path.join(storagePath, config.toolkit.storageFolder, config.toolkit.version);
+
+  if (platform === 'darwin') {
+    const appPath = path.join(
+      toolkitRoot,
+      'simulator',
+      config.platforms.darwin.simulatorDirectory,
+      config.platforms.darwin.appName
+    );
+    if (fs.existsSync(appPath)) {
+      outputChannel.appendLine(`Launching macOS Desktop Simulator: ${appPath}`);
+      spawn('open', ['-a', appPath, '--args', '-s', outputDir], {
+        detached: true,
+        stdio: 'ignore',
+      }).unref();
+      void vscode.window.showInformationMessage(`Launched Macle Desktop Simulator (${path.basename(appPath)})`);
+      return true;
+    }
+  } else if (platform === 'win32') {
+    const exePath = path.join(
+      toolkitRoot,
+      'simulator',
+      config.platforms.win32.simulatorDirectory,
+      config.platforms.win32.executableName
+    );
+    if (fs.existsSync(exePath)) {
+      outputChannel.appendLine(`Launching Windows Desktop Simulator: ${exePath}`);
+      spawn(exePath, ['-s', outputDir], {
+        detached: true,
+        stdio: 'ignore',
+      }).unref();
+      void vscode.window.showInformationMessage(`Launched Macle Desktop Simulator (${path.basename(exePath)})`);
+      return true;
+    }
+  }
+
+  return false;
+}
+
 async function openMacleSimulator(
   outputDir: string,
   context: vscode.ExtensionContext
 ): Promise<void> {
   const platform = process.platform;
-  if (platform !== 'darwin' && platform !== 'win32') {
-    outputChannel.appendLine(`Platform ${platform} has no official desktop simulator. Launching Macle Web Simulator...`);
+  const simType = vscode.workspace.getConfiguration('macle').get<string>('simulator.type', 'platform');
+  outputChannel.appendLine(`[Simulator] Opening simulator (mode: ${simType}, platform: ${platform})...`);
+
+  // If user explicitly configured simulator.type to 'web', open web simulator directly
+  if (simType === 'web') {
+    outputChannel.appendLine(`Launching Web Simulator (configured preference)...`);
     await openWebSimulator(outputDir, context);
     return;
   }
 
-  try {
-    const toolkit = await ensureToolkitInstalled(context);
-    if (!toolkit.simulatorInstalled) {
-      outputChannel.appendLine(`Desktop simulator not available, falling back to Web Simulator.`);
+  // 1. Linux Platform Simulator
+  if (platform === 'linux') {
+    try {
+      outputChannel.appendLine(`Launching Macle Linux Simulator (platform priority)...`);
+      await openLinuxSimulator(outputDir, context);
+      return;
+    } catch (linuxError) {
+      outputChannel.appendLine(`Linux platform simulator failed: ${String(linuxError)}. Falling back to Web Simulator...`);
       await openWebSimulator(outputDir, context);
       return;
     }
-    const config = loadToolkitConfig(context);
-    const officialExtension = vscode.extensions.getExtension(config.officialExtension.id);
-    if (!officialExtension) {
-      const choice = await vscode.window.showWarningMessage(
-        `Build complete at ${outputDir}, but the official Macle extension (${config.officialExtension.id}) is not active. Open in Web Simulator instead?`,
-        'Open Web Simulator'
-      );
-      if (choice === 'Open Web Simulator') {
-        await openWebSimulator(outputDir, context);
-      }
-      return;
-    }
-    void vscode.commands.executeCommand(config.officialExtension.simulatorCommand);
-    void vscode.window.showInformationMessage(
-      `Macle DevTools simulator command invoked. Build output: ${outputDir}`
-    );
-  } catch (error) {
-    outputChannel.appendLine(`Desktop simulator could not be opened: ${String(error)}. Launching Web Simulator...`);
-    await openWebSimulator(outputDir, context);
   }
+
+  // 2. macOS and Windows Desktop Platform Simulator
+  if (platform === 'darwin' || platform === 'win32') {
+    try {
+      outputChannel.appendLine(`Launching desktop platform simulator for ${platform}...`);
+      const launched = await openDesktopSimulator(outputDir, context);
+      if (launched) {
+        return;
+      }
+      outputChannel.appendLine(`Desktop platform simulator executable not found. Falling back to Web Simulator...`);
+    } catch (desktopError) {
+      outputChannel.appendLine(`Desktop platform simulator error: ${String(desktopError)}. Falling back to Web Simulator...`);
+    }
+  }
+
+  // 3. Fallback to Web Simulator
+  outputChannel.appendLine(`Launching Web Simulator (fallback)...`);
+  await openWebSimulator(outputDir, context);
 }
 
 async function selectUniAppProject(): Promise<{ root: string; cli: NonNullable<ReturnType<typeof resolveUniCli>> } | undefined> {

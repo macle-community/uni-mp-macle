@@ -40,6 +40,16 @@
       "archiveLabel": "Win",
       "simulatorDirectory": "windows",
       "executableName": "macle-simulator.exe"
+    },
+    "linux": {
+      "archiveLabel": "Linux",
+      "simulatorDirectory": "linux",
+      "url": "https://github.com/macle-community/simulator-linux/archive/refs/tags/v-1.0.0.zip",
+      "fileName": "simulator-linux-v-1.0.0.zip",
+      "folder": "simulator-linux",
+      "executableName": "macle-simulator",
+      "webEntry": "macle-web-simulator.js",
+      "port": 30000
     }
   },
   "webSimulator": {

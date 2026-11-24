@@ -52,6 +52,16 @@ export interface ToolkitConfig {
       simulatorDirectory: string;
       executableName: string;
     };
+    linux?: {
+      archiveLabel: string;
+      simulatorDirectory: string;
+      url: string;
+      fileName: string;
+      folder?: string;
+      executableName?: string;
+      webEntry?: string;
+      port?: number;
+    };
   };
   webSimulator?: {
     url: string;
@@ -68,6 +78,13 @@ export function resetToolkitConfigCache(): void {
   cachedToolkitConfig = undefined;
 }
 
+export function expandUserPath(inputPath: string): string {
+  if (inputPath.startsWith('~/') || inputPath === '~') {
+    return path.join(os.homedir(), inputPath.slice(inputPath === '~' ? 1 : 2));
+  }
+  return inputPath;
+}
+
 export function toolkitConfigPath(context?: vscode.ExtensionContext): string {
   if (context) {
     const override = vscode.workspace
@@ -75,9 +92,10 @@ export function toolkitConfigPath(context?: vscode.ExtensionContext): string {
       .get<string>('configFile', '')
       .trim();
     if (override) {
-      return path.isAbsolute(override)
-        ? override
-        : path.resolve(context.extensionPath, override);
+      const expanded = expandUserPath(override);
+      return path.isAbsolute(expanded)
+        ? expanded
+        : path.resolve(context.extensionPath, expanded);
     }
     return path.join(context.extensionPath, 'media', 'toolkit-config.json');
   }
@@ -93,6 +111,25 @@ export function loadToolkitConfig(context?: vscode.ExtensionContext): ToolkitCon
   if (cachedToolkitConfig) return cachedToolkitConfig;
   const configPath = toolkitConfigPath(context);
   const parsed = JSON.parse(fs.readFileSync(configPath, 'utf8')) as ToolkitConfig;
+
+  // Overlay settings from VS Code extension configuration
+  try {
+    const macleConfig = vscode.workspace.getConfiguration('macle');
+    const downloadUrl = macleConfig.get<string>('toolkit.downloadUrl')?.trim();
+    if (downloadUrl) parsed.download.url = downloadUrl;
+
+    const version = macleConfig.get<string>('toolkit.version')?.trim();
+    if (version) parsed.toolkit.version = version;
+
+    const linuxUrl = macleConfig.get<string>('simulator.linuxUrl')?.trim();
+    if (linuxUrl && parsed.platforms.linux) parsed.platforms.linux.url = linuxUrl;
+
+    const webUrl = macleConfig.get<string>('simulator.webUrl')?.trim();
+    if (webUrl && parsed.webSimulator) parsed.webSimulator.url = webUrl;
+  } catch {
+    // ignore
+  }
+
   cachedToolkitConfig = parsed;
   return parsed;
 }
@@ -137,7 +174,8 @@ export function getMacleTargetPaths(projectRoot: string): MacleTargetPaths {
 
 export function resolveMacleCompiler(context?: vscode.ExtensionContext): ResolvedCompiler | undefined {
   // 1. User configuration setting: macle.compiler.path
-  const customPath = vscode.workspace.getConfiguration('macle').get<string>('compiler.path')?.trim();
+  const customPathRaw = vscode.workspace.getConfiguration('macle').get<string>('compiler.path')?.trim();
+  const customPath = customPathRaw ? expandUserPath(customPathRaw) : '';
   if (customPath && fs.existsSync(customPath)) {
     if (customPath.endsWith('.js')) {
       return { command: process.execPath || 'node', argsPrefix: [customPath] };
@@ -153,17 +191,32 @@ export function resolveMacleCompiler(context?: vscode.ExtensionContext): Resolve
     const compilerArchiveName =
       config.archives.compiler?.replace(/\.zip$/i, '') || 'Macle_26.6.0-LG0001_Engine_Compiler';
 
-    // 2a. User-selected existing toolkit path (e.g. from welcome page)
-    const localToolkit = context?.globalState.get<string>('macle.toolkit.localPath');
-    if (localToolkit && fs.existsSync(localToolkit)) {
-      const candidates = [
-        path.join(localToolkit, compilerFolder, compilerExecutable),
-        path.join(localToolkit, compilerArchiveName, compilerExecutable),
-        path.join(localToolkit, config.toolkit.contentsFolder, compilerArchiveName, compilerExecutable),
-      ];
-      for (const candidate of candidates) {
-        if (fs.existsSync(candidate)) {
-          return { command: process.execPath || 'node', argsPrefix: [candidate] };
+    // 2a. User-configured or saved toolkit local path
+    const localToolkitSetting = vscode.workspace
+      .getConfiguration('macle.toolkit')
+      .get<string>('localPath', '')
+      .trim();
+    const localToolkitState = context?.globalState.get<string>('macle.toolkit.localPath');
+    const localToolkitCandidates = [
+      localToolkitSetting ? expandUserPath(localToolkitSetting) : '',
+      localToolkitState ? expandUserPath(localToolkitState) : '',
+      path.join(os.homedir(), 'macle', 'DevToolkit_26.6.0'),
+      path.join(os.homedir(), 'macle', 'DevToolkit_25.9.0'),
+    ].filter(Boolean);
+
+    for (const localToolkit of localToolkitCandidates) {
+      if (fs.existsSync(localToolkit)) {
+        const candidates = [
+          path.join(localToolkit, compilerFolder, compilerExecutable),
+          path.join(localToolkit, compilerArchiveName, compilerExecutable),
+          path.join(localToolkit, config.toolkit.contentsFolder, compilerArchiveName, compilerExecutable),
+          path.join(localToolkit, 'DevToolkit_26.6.0-LG0001', 'Macle_26.6.0-LG0001_Engine_Compiler', compilerExecutable),
+          path.join(localToolkit, 'Macle_25.9.0_Engine_Compiler', compilerExecutable),
+        ];
+        for (const candidate of candidates) {
+          if (fs.existsSync(candidate)) {
+            return { command: process.execPath || 'node', argsPrefix: [candidate] };
+          }
         }
       }
     }

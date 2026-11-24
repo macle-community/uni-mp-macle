@@ -131,6 +131,21 @@
           "default": "maui-components",
           "description": "Project-relative folder where the selected MAUI dist files are copied."
         },
+        "macle.toolkit.localPath": {
+          "type": "string",
+          "default": "",
+          "description": "Local path to an existing Macle DevToolkit folder (e.g. ~/macle/DevToolkit_26.6.0) or extracted toolkit directory. When set, tools and simulators are loaded directly from this directory."
+        },
+        "macle.toolkit.downloadUrl": {
+          "type": "string",
+          "default": "https://developer.ethiotelecom.et/developer_tools/static/download/DevToolkit_26.6.0-LG0001.zip",
+          "description": "Download URL for the Macle DevToolkit archive."
+        },
+        "macle.toolkit.version": {
+          "type": "string",
+          "default": "26.6.0",
+          "description": "DevToolkit version label."
+        },
         "macle.toolkit.configFile": {
           "type": "string",
           "default": "",
@@ -140,6 +155,31 @@
           "type": "string",
           "default": "",
           "description": "Optional path to a custom macle-compiler CLI executable or engine-compiler index.js."
+        },
+        "macle.simulator.type": {
+          "type": "string",
+          "enum": [
+            "platform",
+            "web",
+            "auto"
+          ],
+          "default": "platform",
+          "description": "Simulator preference. 'platform' prioritizes the native desktop simulator window (Linux macle-simulator, macOS app, Windows exe). 'web' runs in the web browser. 'auto' chooses platform when available, with web fallback."
+        },
+        "macle.simulator.path": {
+          "type": "string",
+          "default": "",
+          "description": "Optional path to a custom Macle simulator launcher executable (e.g. macle-simulator, macle-simulator.app, or macle-simulator.exe)."
+        },
+        "macle.simulator.linuxUrl": {
+          "type": "string",
+          "default": "https://github.com/macle-community/simulator-linux/archive/refs/tags/v-1.0.0.zip",
+          "description": "Download URL for the Linux simulator archive."
+        },
+        "macle.simulator.webUrl": {
+          "type": "string",
+          "default": "https://github.com/macle-community/simulator-web/archive/refs/tags/v1.0.0.zip",
+          "description": "Download URL for the Web simulator archive."
         }
       }
     },
