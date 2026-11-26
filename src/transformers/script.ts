@@ -1,4 +1,4 @@
-import { transformSync } from '@babel/core';
+import { parseSync, transformSync } from '@babel/core';
 import type { NodePath, PluginObj, types as BabelTypes } from '@babel/core';
 import { API_RENAME_MAP, CONTEXT_MANAGERS, PARAM_RENAME_MAP } from '../rules';
 import type { CalledApis } from '../types';
@@ -13,6 +13,88 @@ function isMemberExpression(node: BabelTypes.Node): node is MemberExpression {
 function isIdentifier(node: BabelTypes.Node | undefined | null): node is BabelTypes.Identifier {
   return node?.type === 'Identifier';
 }
+
+function findAssignedTargetName(node: BabelTypes.Node): string | undefined {
+  let targetName: string | undefined;
+  const visit = (current: BabelTypes.Node | null | undefined): void => {
+    if (!current || targetName) return;
+    if (
+      current.type === 'AssignmentExpression' &&
+      isMemberExpression(current.left) &&
+      isIdentifier(current.left.object)
+    ) {
+      targetName = current.left.object.name;
+      return;
+    }
+    if (current.type === 'BlockStatement') {
+      for (const stmt of current.body) visit(stmt);
+    } else if (current.type === 'ExpressionStatement') {
+      visit(current.expression);
+    } else if (current.type === 'IfStatement') {
+      visit(current.consequent);
+      visit(current.alternate);
+    } else if (current.type === 'LogicalExpression') {
+      visit(current.left);
+      visit(current.right);
+    }
+  };
+  visit(node);
+  return targetName;
+}
+function patchPageComponentOptions(opts: Record<string, any>): Record<string, any> {
+  return opts;
+}
+
+const MACLE_PAGE_PATCH_FN = `(function(opts) {
+  if (opts && (!opts.data || typeof opts.data !== "object")) {
+    opts.data = {};
+  }
+  if (opts && opts.methods && typeof opts.methods.onLoad === "function" && opts.lifetimes && typeof opts.lifetimes.attached === "function") {
+    var origOnLoad = opts.methods.onLoad;
+    var origOnReady = opts.methods.onReady;
+    var origOnUnload = opts.methods.onUnload;
+    var attached = opts.lifetimes.attached;
+    var ready = opts.lifetimes.ready;
+    var detached = opts.lifetimes.detached;
+    opts.methods.onLoad = function(options) {
+      if (!this.$vm) {
+        this.properties = {};
+        this.triggerEvent = function() {};
+        this.selectAllComponents = this.selectAllComponents || function() { return []; };
+        attached.call(this);
+      }
+      return origOnLoad.call(this, options);
+    };
+    if (typeof ready === "function") {
+      opts.methods.onReady = function() {
+        if (this.$vm && !this.__macleReadyCalled) {
+          this.__macleReadyCalled = true;
+          ready.call(this);
+        }
+        return origOnReady ? origOnReady.call(this) : undefined;
+      };
+    }
+    if (typeof detached === "function") {
+      opts.methods.onUnload = function() {
+        if (this.$vm && !this.__macleDetachedCalled) {
+          this.__macleDetachedCalled = true;
+          detached.call(this);
+        }
+        return origOnUnload ? origOnUnload.call(this) : undefined;
+      };
+    }
+    opts.onLoad = opts.methods.onLoad;
+    if (typeof opts.methods.onReady === "function") opts.onReady = opts.methods.onReady;
+    if (typeof opts.methods.onUnload === "function") opts.onUnload = opts.methods.onUnload;
+    for (var k in opts.methods) {
+      if (typeof opts.methods[k] === "function" && typeof opts[k] !== "function") {
+        opts[k] = opts.methods[k];
+      }
+    }
+    return Page(opts);
+  }
+  return Component(opts);
+})`;
 
 function getManagerPrefix(node: BabelTypes.Node | undefined | null): string | undefined {
   if (!node || node.type !== 'CallExpression' || !isMemberExpression(node.callee)) return undefined;
@@ -126,6 +208,39 @@ function transformJsToMacle(code: unknown, filename = 'unknown.js'): { code: str
 
           return {
             visitor: {
+              ForInStatement(astPath: NodePath<BabelTypes.ForInStatement>) {
+                const { right, body } = astPath.node;
+                if (!isIdentifier(right) || right.name !== 'wx' || astPath.scope.hasBinding('wx')) {
+                  return;
+                }
+                const targetName = findAssignedTargetName(body);
+                if (!targetName) return;
+                const replacementAst = parseSync(
+                  `Object.setPrototypeOf(${targetName}, new Proxy({}, { get(_, prop) { return ma[prop]; }, has(_, prop) { return prop in ma; } }));`
+                );
+                const stmt = replacementAst?.program.body[0];
+                if (stmt) {
+                  astPath.replaceWith(stmt);
+                  astPath.skip();
+                }
+              },
+              MemberExpression(astPath: NodePath<BabelTypes.MemberExpression>) {
+                const { object, property, computed } = astPath.node;
+                if (
+                  !computed &&
+                  isIdentifier(object) &&
+                  object.name === 'wx' &&
+                  !astPath.scope.hasBinding('wx') &&
+                  isIdentifier(property) &&
+                  property.name.startsWith('$')
+                ) {
+                  const cacheAst = parseSync('(globalThis.__macleUniCache || (globalThis.__macleUniCache = {}))');
+                  const exprStmt = cacheAst?.program.body[0];
+                  if (exprStmt?.type === 'ExpressionStatement') {
+                    astPath.node.object = exprStmt.expression;
+                  }
+                }
+              },
               VariableDeclarator(astPath: NodePath<BabelTypes.VariableDeclarator>) {
                 const { id, init } = astPath.node;
                 if (isIdentifier(id) && !astPath.scope.hasBinding('wx')) {
@@ -133,7 +248,30 @@ function transformJsToMacle(code: unknown, filename = 'unknown.js'): { code: str
                   if (prefix) trackedInstances[id.name] = prefix;
                 }
               },
-              CallExpression: inspectCall,
+              CallExpression(astPath: NodePath<BabelTypes.CallExpression>) {
+                if (
+                  isIdentifier(astPath.node.callee) &&
+                  astPath.node.callee.name === 'Component' &&
+                  astPath.node.arguments.length === 1 &&
+                  !(astPath.node as unknown as { __macleWrapped?: boolean }).__macleWrapped
+                ) {
+                  const patchAst = parseSync(MACLE_PAGE_PATCH_FN);
+                  const exprStmt = patchAst?.program.body[0];
+                  if (exprStmt?.type === 'ExpressionStatement') {
+                    const arg = astPath.node.arguments[0];
+                    const wrappedCall: BabelTypes.CallExpression = {
+                      type: 'CallExpression',
+                      callee: exprStmt.expression,
+                      arguments: [arg],
+                    };
+                    (wrappedCall as unknown as { __macleWrapped?: boolean }).__macleWrapped = true;
+                    astPath.replaceWith(wrappedCall);
+                    astPath.skip();
+                    return;
+                  }
+                }
+                inspectCall(astPath);
+              },
               OptionalCallExpression: inspectCall,
               Identifier(astPath: NodePath<BabelTypes.Identifier>) {
                 const parent = astPath.parent;

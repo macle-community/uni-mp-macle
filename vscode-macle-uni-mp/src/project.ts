@@ -21,11 +21,91 @@ async function resolveProjectDestination(): Promise<string | undefined> {
   return selected?.[0]?.fsPath;
 }
 
+interface TaroInitOptions {
+  description: string;
+  typescript: boolean;
+  buildEs5: boolean;
+  css: 'Sass' | 'Less' | 'Stylus' | 'None';
+  compiler: 'Webpack5' | 'Vite';
+  npm: 'npm' | 'pnpm' | 'yarn';
+}
+
+async function promptTaroInitOptions(projectName: string): Promise<TaroInitOptions | undefined> {
+  const description = await vscode.window.showInputBox({
+    title: 'Taro Project Description',
+    prompt: 'Enter a short project description',
+    value: `${projectName} Taro React mini program`,
+  });
+  if (description === undefined) return undefined;
+
+  const tsPick = await vscode.window.showQuickPick(
+    [
+      { label: 'Yes (TypeScript)', value: true },
+      { label: 'No (JavaScript)', value: false },
+    ],
+    { title: 'Use TypeScript?', placeHolder: 'Select language' }
+  );
+  if (!tsPick) return undefined;
+
+  const cssPick = await vscode.window.showQuickPick(
+    [
+      { label: 'Less', value: 'Less' as const },
+      { label: 'Sass', value: 'Sass' as const },
+      { label: 'Stylus', value: 'Stylus' as const },
+      { label: 'None', value: 'None' as const },
+    ],
+    { title: 'CSS Preprocessor', placeHolder: 'Select CSS preprocessor' }
+  );
+  if (!cssPick) return undefined;
+
+  const compilerPick = await vscode.window.showQuickPick(
+    [
+      { label: 'Webpack5', value: 'Webpack5' as const },
+      { label: 'Vite', value: 'Vite' as const },
+    ],
+    { title: 'Build Compiler', placeHolder: 'Select bundler / compiler' }
+  );
+  if (!compilerPick) return undefined;
+
+  const npmPick = await vscode.window.showQuickPick(
+    [
+      { label: 'npm', value: 'npm' as const },
+      { label: 'pnpm', value: 'pnpm' as const },
+      { label: 'yarn', value: 'yarn' as const },
+    ],
+    { title: 'Package Manager', placeHolder: 'Select package manager' }
+  );
+  if (!npmPick) return undefined;
+
+  const es5Pick = await vscode.window.showQuickPick(
+    [
+      { label: 'No (Recommended)', value: false },
+      { label: 'Yes (Compile to ES5)', value: true },
+    ],
+    { title: 'Compile to ES5?', placeHolder: 'Choose whether to transpile to ES5' }
+  );
+  if (!es5Pick) return undefined;
+
+  return {
+    description: description.trim() || `${projectName} Taro React mini program`,
+    typescript: tsPick.value,
+    buildEs5: es5Pick.value,
+    css: cssPick.value,
+    compiler: compilerPick.value,
+    npm: npmPick.value,
+  };
+}
+
+function quoteShellArg(arg: string): string {
+  if (/^[A-Za-z0-9_./:@=-]+$/.test(arg)) return arg;
+  return `"${arg.replace(/"/g, '\\"')}"`;
+}
+
 async function createTerminalProject(
   framework: ProjectFramework,
   projectName: string,
   destination: string
-): Promise<string> {
+): Promise<string | undefined> {
   const projectRoot = path.join(destination, projectName);
   if (fs.existsSync(projectRoot)) {
     throw new Error(`The project folder already exists: ${projectRoot}`);
@@ -35,7 +115,32 @@ async function createTerminalProject(
   let args: string[];
   let commandName: string;
   if (framework === 'taro-react') {
-    args = [...manager.npxArgs, '--yes', '@tarojs/cli', 'init', projectName];
+    const taroOpts = await promptTaroInitOptions(projectName);
+    if (!taroOpts) return undefined;
+    args = [
+      ...manager.npxArgs,
+      '--yes',
+      '@tarojs/cli',
+      'init',
+      projectName,
+      '--name',
+      projectName,
+      '--description',
+      taroOpts.description,
+      taroOpts.typescript ? '--typescript' : '--no-typescript',
+      taroOpts.buildEs5 ? '--build-es5' : '--no-build-es5',
+      '--framework',
+      'React',
+      '--compiler',
+      taroOpts.compiler,
+      '--css',
+      taroOpts.css,
+      '--npm',
+      taroOpts.npm,
+      '--template',
+      'default',
+      '--autoInstall',
+    ];
     commandName = 'Taro React';
   } else {
     args = [...manager.npxArgs, '--yes', 'degit', 'dcloudio/uni-preset-vue#vite-ts', projectName];
@@ -47,7 +152,12 @@ async function createTerminalProject(
     cwd: destination,
   });
   terminal.show();
-  terminal.sendText([manager.command, ...args].join(' '));
+  const baseCommand = [manager.command, ...args.map(quoteShellArg)].join(' ');
+  if (framework === 'uni-vue') {
+    terminal.sendText(`${baseCommand} && cd ${quoteShellArg(projectName)} && npm install`);
+  } else {
+    terminal.sendText(baseCommand);
+  }
   return projectRoot;
 }
 
@@ -94,7 +204,7 @@ export async function createPureMacleProject(
   const pageMaml = `<!--pages/index/index.maml-->\n<view class="container">\n  <text class="title">{{motto}}</text>\n</view>\n`;
   const pageMass = `/**pages/index/index.mass**/\n.title {\n  font-size: 36rpx;\n  color: #333333;\n  font-weight: bold;\n}\n`;
   const pageJs = `// pages/index/index.js\nPage({\n  data: {\n    motto: 'Hello Macle'\n  },\n  onLoad(options) {},\n  onReady() {},\n  onShow() {},\n  onHide() {},\n  onUnload() {}\n});\n`;
-  const gitignore = `node_modules/\ndist/\n.DS_Store\n`;
+  const gitignore = `node_modules/\ndist/\n.macle/\n.DS_Store\n`;
 
   fs.writeFileSync(path.join(projectRoot, 'project.config.json'), JSON.stringify(projectConfig, null, 2) + '\n', 'utf8');
   fs.writeFileSync(path.join(projectRoot, 'app.json'), JSON.stringify(appJson, null, 2) + '\n', 'utf8');
@@ -196,6 +306,7 @@ export async function createMacleProject(): Promise<void> {
       }
     } else {
       const projectRoot = await createTerminalProject(framework.framework, projectName, destination);
+      if (!projectRoot) return;
       void vscode.window.showInformationMessage(
         `Creating ${framework.label} project in ${projectRoot}. VS Code will open the project after the scaffold terminal finishes.`
       );
@@ -261,6 +372,132 @@ function mergeJsonArray(
   ];
 }
 
+function pluginConfigPath(root: string): string | undefined {
+  for (const name of [
+    'vite.config.ts',
+    'vite.config.mts',
+    'vite.config.js',
+    'vite.config.mjs',
+    'vite.config.cts',
+    'vite.config.cjs',
+  ]) {
+    const configPath = path.join(root, name);
+    if (fs.existsSync(configPath)) return configPath;
+  }
+  return undefined;
+}
+
+function addPluginToConfig(
+  config: string,
+  pluginImport: string,
+  commonJs: boolean
+): string | undefined {
+  const imported = commonJs
+    ? config.match(/(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*require\((['"])@macle\/uni-mp\2\)/)
+    : config.match(/import\s+([A-Za-z_$][\w$]*)\s+from\s+(['"])@macle\/uni-mp\2/);
+  const bundledImport = commonJs
+    ? config.match(
+        /(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*require\((['"])[^'"]*macle-uni-mp\.cjs\2\)/
+      )
+    : config.match(
+        /import\s+([A-Za-z_$][\w$]*)\s+from\s+(['"])[^'"]*macle-uni-mp\.cjs\2/
+      );
+  let next = config;
+  let pluginName = 'macleUniPlugin';
+
+  if (imported) {
+    pluginName = imported[1];
+    next = next.replace(imported[0], imported[0].replace('@macle/uni-mp', pluginImport));
+  } else if (bundledImport) {
+    pluginName = bundledImport[1];
+  } else {
+    const importStatement = commonJs
+      ? `const ${pluginName} = require(${JSON.stringify(pluginImport)});`
+      : `import ${pluginName} from ${JSON.stringify(pluginImport)};`;
+    next = `${importStatement}\n${next}`;
+  }
+
+  const call = `${pluginName}({ sourceMaps: true, isAutoOpenReport: false })`;
+  if (new RegExp(`\\b${pluginName}\\s*\\(`).test(next)) return next;
+
+  const pluginsProperty = /plugins\s*:\s*\[/;
+  if (pluginsProperty.test(next)) {
+    return next.replace(pluginsProperty, (match) => `${match}\n      ${call},`);
+  }
+
+  const configObject =
+    /(defineConfig\s*\(\s*\{|export\s+default\s*\{|module\.exports\s*=\s*\{|exports\.default\s*=\s*\{)/;
+  if (configObject.test(next)) {
+    return next.replace(configObject, (match) => `${match}\n  plugins: [${call}],`);
+  }
+  return undefined;
+}
+
+export function configureProject(root: string, silent = false): string | undefined {
+  const corePath = path.join(__dirname, 'macle-uni-mp.cjs');
+  if (!fs.existsSync(corePath)) {
+    if (!silent) {
+      void vscode.window.showErrorMessage(
+        'The bundled Macle compiler is missing. Rebuild the VS Code extension package.'
+      );
+    }
+    return undefined;
+  }
+  try {
+    const projectCorePath = path.join(root, 'node_modules', '.cache', 'macle-uni-mp.cjs');
+    fs.mkdirSync(path.dirname(projectCorePath), { recursive: true });
+    fs.copyFileSync(corePath, projectCorePath);
+    const pluginImport = './node_modules/.cache/macle-uni-mp.cjs';
+    const configPath = pluginConfigPath(root);
+
+    if (!configPath) {
+      const newConfigPath = path.join(root, 'vite.config.mjs');
+      const source = `import { defineConfig } from 'vite';\nimport macleUniPlugin from ${JSON.stringify(pluginImport)};\n\nexport default defineConfig({\n  plugins: [macleUniPlugin({ sourceMaps: true, isAutoOpenReport: false })],\n});\n`;
+      fs.writeFileSync(newConfigPath, source, 'utf8');
+      return newConfigPath;
+    }
+
+    const original = fs.readFileSync(configPath, 'utf8');
+    const commonJs = /\.(?:cjs|cts)$/.test(configPath);
+    const updated = addPluginToConfig(original, pluginImport, commonJs);
+    if (!updated) {
+      if (!silent) {
+        void vscode.window.showErrorMessage(
+          `Could not safely add the Macle plugin to ${path.basename(configPath)}. Add the bundled plugin to the Vite plugins array manually.`
+        );
+      }
+      return undefined;
+    }
+    if (updated !== original) fs.writeFileSync(configPath, updated, 'utf8');
+    return configPath;
+  } catch (error) {
+    if (!silent) {
+      void vscode.window.showErrorMessage(`Could not prepare the Macle compiler: ${String(error)}`);
+    }
+    return undefined;
+  }
+}
+
+export function ensureUniMaclePluginInjected(root: string): boolean {
+  if (detectProjectFramework(root) !== 'uni-vue') return false;
+  if (!fs.existsSync(path.join(root, 'package.json'))) return false;
+  const configPath = pluginConfigPath(root);
+  if (!configPath) return false;
+
+  try {
+    const content = fs.readFileSync(configPath, 'utf8');
+    const cachedPlugin = path.join(root, 'node_modules', '.cache', 'macle-uni-mp.cjs');
+    const hasPlugin = content.includes('macle-uni-mp.cjs') || content.includes('@macle/uni-mp');
+    if (hasPlugin && fs.existsSync(cachedPlugin)) {
+      return true;
+    }
+  } catch {
+    return false;
+  }
+
+  return Boolean(configureProject(root, true));
+}
+
 export async function configureRunAndDebug(root?: string): Promise<void> {
   const projectRoot = root ?? projectRootFallback();
   if (!projectRoot) {
@@ -286,9 +523,10 @@ export async function configureRunAndDebug(root?: string): Promise<void> {
         scripts['dev:macle'] ??= 'npx taro build --type macle --watch';
         scripts['build:macle'] ??= 'npx taro build --type macle';
       } else {
-        scripts['dev:h5'] ??= 'npx uni -p h5 --watch';
-        scripts['dev:macle'] ??= 'npx uni -p mp-weixin --watch';
-        scripts['build:macle'] ??= 'npx uni -p mp-weixin';
+        scripts['dev:h5'] ??= 'uni';
+        scripts['dev:macle'] ??= 'uni -p mp-weixin';
+        scripts['build:macle'] ??= 'uni build -p mp-weixin';
+        configureProject(projectRoot);
       }
       packageJson.scripts = scripts;
       fs.writeFileSync(packageJsonPath, JSON.stringify(packageJson, null, 2) + '\n', 'utf8');
@@ -403,13 +641,13 @@ export async function configureRunAndDebug(root?: string): Promise<void> {
       {
         label: 'Macle: Compile Pure Macle (Debug)',
         type: 'shell',
-        command: `macle-compiler -s "\${workspaceFolder}" -t "\${userHome}/.macle/target/compose/${projectName}/root/debug/app" -d`,
+        command: `macle-compiler -s "\${workspaceFolder}" -t "\${userHome}/.macle/target/compile/${projectName}/app" -d`,
         problemMatcher: [],
       },
       {
         label: 'Macle: Start Simulator',
         type: 'shell',
-        command: `macle-simulator -s "\${userHome}/.macle/target/compose/${projectName}/root/debug/app" -r "\${workspaceFolder}" || npx --yes @macle-community/simulator-web -s "\${userHome}/.macle/target/compose/${projectName}/root/debug/app" -p 30000 -w -o`,
+        command: `macle-simulator -s "\${userHome}/.macle/target/compile/${projectName}" -r "\${workspaceFolder}" || npx --yes @macle-community/simulator-web -s "\${userHome}/.macle/target/compile/${projectName}/app" -p 30000 -w -o`,
         isBackground: true,
         problemMatcher: {
           owner: 'macle-simulator',

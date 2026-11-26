@@ -1,5 +1,5 @@
 {
-  "name": "vscode-macle-uni-mp",
+  "name": "telebirr-miniapp-dev-kit",
   "displayName": "Telebirr MiniApp Dev Kit",
   "description": "Create Vue uni-app, React Taro, or Pure Macle projects, compile for Macle, inspect compatibility, and run or debug them in VS Code.",
   "version": "1.0.0",
@@ -165,6 +165,21 @@
           ],
           "default": "platform",
           "description": "Simulator preference. 'platform' prioritizes the native desktop simulator window (Linux macle-simulator, macOS app, Windows exe). 'web' runs in the web browser. 'auto' chooses platform when available, with web fallback."
+        },
+        "macle.simulator.openIn": {
+          "type": "string",
+          "enum": [
+            "vscode",
+            "standalone",
+            "browser"
+          ],
+          "default": "vscode",
+          "enumDescriptions": [
+            "Open the Macle Simulator inside VS Code in an embedded Webview panel.",
+            "Open the Macle Simulator in a standalone desktop window.",
+            "Open the Macle Simulator in an external web browser."
+          ],
+          "description": "Where to open the Macle Simulator."
         },
         "macle.simulator.path": {
           "type": "string",

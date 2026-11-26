@@ -10,6 +10,8 @@ export interface ResolvedCompiler {
 
 export interface MacleTargetPaths {
   projectName: string;
+  compileRoot: string;
+  compileApp: string;
   debugApp: string;
   releaseApp: string;
 }
@@ -165,10 +167,14 @@ export function resolveMacleProjectName(projectRoot: string): string {
 export function getMacleTargetPaths(projectRoot: string): MacleTargetPaths {
   const projectName = resolveMacleProjectName(projectRoot);
   const home = os.homedir();
+  const compileRoot = path.join(home, '.macle', 'target', 'compile', projectName);
+  const compileApp = path.join(compileRoot, 'app');
   return {
     projectName,
+    compileRoot,
+    compileApp,
     debugApp: path.join(home, '.macle', 'target', 'compose', projectName, 'root', 'debug', 'app'),
-    releaseApp: path.join(home, '.macle', 'target', 'compile', projectName, 'app'),
+    releaseApp: compileApp,
   };
 }
 
