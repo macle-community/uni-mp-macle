@@ -1,8 +1,9 @@
 {
   "name": "telebirr-miniapp-dev-kit",
-  "displayName": "Telebirr MiniApp Dev Kit",
+  "displayName": "Telebirr miniapp dev kit",
+  "icon": "media/telebirr.png",
   "description": "Create Vue uni-app, React Taro, or Pure Macle projects, compile for Macle, inspect compatibility, and run or debug them in VS Code.",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "publisher": "macle-community",
   "license": "MIT",
   "repository": {
@@ -53,8 +54,8 @@
       "activitybar": [
         {
           "id": "macle",
-          "title": "Macle",
-          "icon": "./media/macle.svg"
+          "title": "Telebirr miniapp dev kit",
+          "icon": "./media/telebirr.svg"
         }
       ]
     },

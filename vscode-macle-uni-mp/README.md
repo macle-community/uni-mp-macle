@@ -1,21 +1,65 @@
-# Telebirr MiniApp Dev Kit
+# Telebirr miniapp dev kit
 
-VS Code integration for the `@macle/uni-mp` uni-app compatibility plugin.
+All-in-one VS Code extension for building, previewing, debugging, and validating **Telebirr / Macle** mini-programs across **Vue 3 (uni-app)**, **React (Taro)**, and **Pure Macle** projects.
 
-Open the **Macle** icon in the Activity Bar for quick actions: **New Project**, **Run & Debug Project**, **Compile & Preview**, **Compile for Macle**, **Compatibility Report**, and **Configure MAUI UI Library**. New Project creates Pure Macle, React + Taro, or Vue 3 + uni-app projects. Run & Debug Project adds launch and development task profiles to `.vscode/launch.json` and `.vscode/tasks.json`. You can also use **Macle: Compile & Preview in Macle** or the status-bar button to start a development build and hand it off to the official Macle MiniProgram Tools extension.
+---
 
-For Pure Macle projects, the extension invokes `macle-compiler` directly and compiles to standard Macle targets under `~/.macle/target/`:
-- **Simulator / Debug**: `~/.macle/target/compose/<projectName>/root/debug/app`
-- **Release / Pack**: `~/.macle/target/compile/<projectName>/app`
+## Features
 
-For OS platforms other than macOS and Windows (such as Linux), where no official desktop simulator is provided by the official Macle extension, the extension automatically downloads and uses the standalone **Macle Web Simulator** (`@macle-community/simulator-web`) as the default runtime simulator, opening and live-reloading in the browser.
+### 1. Project Scaffolding
+Open the **Telebirr miniapp dev kit** icon in the Activity Bar and click **New Project** (`macle.createProject`) to scaffold:
+- **Vue 3 + uni-app** (with automatic `@macle/uni-mp` Vite plugin integration)
+- **React + Taro**
+- **Pure Macle** (`maml` / `mass` / `js` / `sjs`)
 
-The extension includes the Macle compiler plugin bundle, live API/component diagnostics with Macle documentation links, Vue built-in and MAUI component/known-attribute IntelliSense, guard-only quick fixes, conditional-compilation snippets and decorations, and a report webview with source-map navigation.
+### 2. Embedded Mobile Simulator
+Run **Build & Run with Simulator** (`macle.compileAndPreview`) or click **Macle Preview** in the status bar to compile your project and open it in the built-in **Macle Simulator** Webview inside VS Code:
+- **Mobile Device Frame**: Renders inside a responsive smartphone shell with preset sizes (`Mobile 375×812`, `Pro 390×844`, `Android 412×915`, or `Full Width`).
+- **Live Reload on Save**: Automatically recompiles changes and refreshes the embedded simulator without opening extra desktop windows.
+- **Flexible Launch Targets**: Switch between `vscode` (embedded panel, default), `standalone` (desktop simulator window), or `browser` (`@macle-community/simulator-web` / web simulator) via `macle.simulator.openIn`.
 
-The official `MacleTeam.macle-miniprogram-tools` extension is installed as a dependency. Toolkit download URLs, archive names, storage folders, official-extension paths, and simulator commands are defined in `media/toolkit-config.json`. Set `macle.toolkit.configFile` to an absolute or extension-relative JSON path to override that file later without rebuilding. On macOS or Windows, the matching nested simulator archive is installed into the location configured for the official Macle extension. Compile-and-preview invokes the configured simulator command after output changes. The UI and Engine Compiler packages remain available in global storage; the official extension currently exposes no setting or API for installing or invoking those standalone packages. Generated files are written to `dist/dev/mp-macle`. Simulator project selection is handled by the official extension. The selected uni-app app needs its normal dependencies, including `@dcloudio/vite-plugin-uni`. If the current workspace is the plugin repository rather than an app, the build command lets you select the uni-app project folder; it remembers that folder for later builds.
+### 3. Compilation & Watch Mode
+- **uni-app / Taro**: Automatically injects the bundled `@macle/uni-mp` plugin into `node_modules/.cache/` and updates your Vite config using a portable relative path, builds `dist/dev/mp-macle`, and compiles via `macle-compiler` into `~/.macle/target/compile/<projectName>/app`.
+- **Pure Macle**: Compiles directly with `macle-compiler` to `~/.macle/target/compile/<projectName>/app` (or release output) and watches source files for changes (`Macle: Start Watching Changes`).
 
-The first build copies the bundled plugin into `node_modules/.cache/` and adds that relative path to the project's Vite config, so the config does not contain a machine-specific extension path. The extension refreshes the cached core on each build and enables source maps for report navigation. Review the config change; the cached file is regenerated if dependencies are reinstalled. The report opens from **Macle: Open Compatibility Report** after a build.
+### 4. Run & Debug Profiles
+Use **Macle: Configure Run and Debug** (`macle.configureRunAndDebug`) to generate `.vscode/launch.json` and `.vscode/tasks.json` entries tailored to your project type.
 
-MAUI completions use the `maui-*` component tags. The MAUI library is distributed separately: copy its `dist` files into the app and register each component in `usingComponents` as described in the linked documentation.
+### 5. Compatibility Diagnostics, IntelliSense & Report
+- **Live Diagnostics**: Highlights unsupported or guarded WeChat/uni-app APIs and components with links to Macle documentation and guard-only quick fixes.
+- **IntelliSense & Snippets**: Autocomplete for Vue built-in components, `maui-*` components, known attributes, and conditional-compilation snippets (`#ifdef` / `#ifndef`) with visual decorations.
+- **Compatibility Report**: Run **Macle: Open Compatibility Report** after a build to inspect transformed files and jump directly to source lines.
 
-Use **Macle: Configure MAUI UI Library** to select a library folder containing `dist/` (or select `dist/` itself). The extension copies files into the configured project-relative `macle.maui.targetFolder` (default `maui-components`), scans routes in `pages.json` and `src/pages.json` for MAUI tags in page templates, then adds registrations to each matching page's `style.usingComponents`. Existing files and registrations are preserved; conflicts and component entries not found in the selected library are reported instead of being overwritten or guessed.
+### 6. MAUI UI Library Integration
+Use **Macle: Configure MAUI UI Library** (`macle.configureMauiLibrary`) to select a MAUI `dist/` folder. The extension copies assets into `macle.maui.targetFolder` (default: `maui-components`), scans `pages.json` / `src/pages.json` and page templates for `maui-*` tags, and registers matching components in each page's `style.usingComponents` without overwriting existing entries.
+
+---
+
+## Commands
+
+| Command | Description |
+| --- | --- |
+| `Macle: New Project` | Create a new Pure Macle, React Taro, or Vue 3 uni-app project. |
+| `Macle: Build & Run with Simulator` | Start dev build/watch and open the simulator. |
+| `Macle: Start Watching Changes` | Watch project files and auto-recompile on save. |
+| `Macle: Compile for Macle` | Run a debug compilation to `~/.macle/target/compile/<projectName>/app`. |
+| `Macle: Compile for Macle (Release / Pack)` | Run a release compilation/pack build. |
+| `Macle: Open Web Simulator` | Open the standalone/web simulator. |
+| `Macle: Open Compatibility Report` | Open the compatibility report Webview for the latest build. |
+| `Macle: Configure MAUI UI Library` | Copy MAUI `dist/` assets and register `usingComponents` in `pages.json`. |
+| `Macle: Configure Run and Debug` | Generate `.vscode/launch.json` and `.vscode/tasks.json` profiles. |
+| `Macle: Show Welcome Page` | Open the Telebirr miniapp dev kit welcome page. |
+
+---
+
+## Extension Settings
+
+| Setting | Default | Description |
+| --- | --- | --- |
+| `macle.simulator.openIn` | `"vscode"` | Where to open the simulator: `"vscode"`, `"standalone"`, or `"browser"`. |
+| `macle.simulator.type` | `"platform"` | Simulator runtime preference: `"platform"`, `"web"`, or `"auto"`. |
+| `macle.simulator.path` | `""` | Custom path to a `macle-simulator` executable. |
+| `macle.compiler.path` | `""` | Custom path to `macle-compiler` or `engine-compiler/index.js`. |
+| `macle.toolkit.localPath` | `""` | Path to a local Macle DevToolkit directory. |
+| `macle.toolkit.configFile` | `""` | Optional path to a custom `toolkit-config.json`. |
+| `macle.maui.targetFolder` | `"maui-components"` | Project-relative folder where MAUI `dist` files are copied. |

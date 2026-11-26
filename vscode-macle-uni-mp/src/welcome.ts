@@ -111,6 +111,7 @@ export async function showWelcomePage(
         }
         case 'skip': {
           await context.globalState.update('macle.welcomeShown', true);
+          await context.globalState.update('macle.welcomeSkipped', true);
           break;
         }
       }
@@ -186,6 +187,7 @@ export async function showWelcomePage(
       }
       case 'skip': {
         await context.globalState.update('macle.welcomeShown', true);
+        await context.globalState.update('macle.welcomeSkipped', true);
         break;
       }
     }

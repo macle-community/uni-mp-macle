@@ -476,7 +476,14 @@ function spawnOfficialSimulatorServer(
 }
 
 function notifySimulatorReload(port = 30000): void {
-  if (webSimulatorProcess && webSimulatorProcess.exitCode === null && webSimulatorProcess.connected) {
+  const openIn = vscode.workspace.getConfiguration('macle').get<string>('simulator.openIn', 'vscode');
+  if (
+    openIn !== 'vscode' &&
+    !simulatorWebviewPanel &&
+    webSimulatorProcess &&
+    webSimulatorProcess.exitCode === null &&
+    webSimulatorProcess.connected
+  ) {
     try {
       if (currentSimulatorSourceDir) {
         webSimulatorProcess.send(
@@ -2893,16 +2900,37 @@ export function activate(context: vscode.ExtensionContext): void {
     context.subscriptions.push(showWelcome);
     outputChannel.appendLine('macle.showWelcomePage command registered.');
 
-    // Auto-show welcome page on first install (deferred so VS Code is ready).
+    // Auto-show welcome page only on first install, extension update, or missing compiler/setup issue.
     setTimeout(async () => {
       void autoSyncAvailableSimulators(context);
-      outputChannel.appendLine('setTimeout: showing welcome page (auto-show)...');
+      const currentVersion = String(context.extension.packageJSON?.version ?? '1.0.0');
+      const lastVersion = context.globalState.get<string>('macle.lastVersion');
+      const alreadyShown = context.globalState.get<boolean>('macle.welcomeShown');
+      const userSkipped = context.globalState.get<boolean>('macle.welcomeSkipped');
+      const hasCompiler = Boolean(resolveMacleCompiler(context));
+      const isFirstTime = !alreadyShown;
+      const isUpdate = lastVersion !== currentVersion;
+      const hasIssue = !hasCompiler && !userSkipped;
+
+      if (!isFirstTime && !isUpdate && !hasIssue) {
+        outputChannel.appendLine('Skipping welcome page auto-show (already configured and up to date).');
+        return;
+      }
+
+      outputChannel.appendLine(
+        `setTimeout: showing welcome page (firstTime=${isFirstTime}, update=${isUpdate}, issue=${hasIssue})...`
+      );
       try {
-        await showWelcomePage(context, async () => {
-          outputChannel.appendLine('Welcome page auto-show download callback starting...');
-          await ensureToolkitInstalled(context);
-          outputChannel.appendLine('Welcome page auto-show download callback complete.');
-        }, true);
+        await context.globalState.update('macle.lastVersion', currentVersion);
+        await showWelcomePage(
+          context,
+          async () => {
+            outputChannel.appendLine('Welcome page auto-show download callback starting...');
+            await ensureToolkitInstalled(context);
+            outputChannel.appendLine('Welcome page auto-show download callback complete.');
+          },
+          true
+        );
       } catch (error) {
         outputChannel.appendLine(`Welcome page auto-show error: ${String(error)}`);
         await offerToolkitRecovery(context, error);
