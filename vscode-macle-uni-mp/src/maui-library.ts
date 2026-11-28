@@ -24,6 +24,7 @@ interface PageUpdate {
 }
 
 export interface MauiLibraryPlan {
+  kind: 'uni-app' | 'pure-macle';
   pagesJsonPath: string;
   outputDirectory: string;
   updates: PageUpdate[];
@@ -43,10 +44,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-function resolvePagesJson(root: string): string | undefined {
+function resolveProjectConfig(root: string): { kind: 'uni-app' | 'pure-macle'; filePath: string } | undefined {
   for (const candidate of ['pages.json', 'src/pages.json']) {
     const filePath = path.join(root, candidate);
-    if (fs.existsSync(filePath)) return filePath;
+    if (fs.existsSync(filePath)) return { kind: 'uni-app', filePath };
+  }
+  const appJsonPath = path.join(root, 'app.json');
+  if (fs.existsSync(appJsonPath)) {
+    return { kind: 'pure-macle', filePath: appJsonPath };
   }
   return undefined;
 }
@@ -56,11 +61,13 @@ function isWithin(root: string, target: string): boolean {
   return relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
 }
 
-function pageEntries(configuration: PagesConfiguration): PageReference[] {
+function pageEntries(configuration: PagesConfiguration, kind: 'uni-app' | 'pure-macle'): PageReference[] {
   const result: PageReference[] = [];
   if (Array.isArray(configuration.pages)) {
     for (const entry of configuration.pages) {
-      if (isRecord(entry) && typeof entry.path === 'string') {
+      if (kind === 'pure-macle' && typeof entry === 'string') {
+        result.push({ entry: { path: entry }, sourcePath: entry });
+      } else if (isRecord(entry) && typeof entry.path === 'string') {
         result.push({ entry: entry as PageEntry, sourcePath: entry.path });
       }
     }
@@ -71,7 +78,12 @@ function pageEntries(configuration: PagesConfiguration): PageReference[] {
       if (!isRecord(subPackage) || !Array.isArray(subPackage.pages)) continue;
       const packageRoot = typeof subPackage.root === 'string' ? subPackage.root : '';
       for (const entry of subPackage.pages) {
-        if (isRecord(entry) && typeof entry.path === 'string') {
+        if (kind === 'pure-macle' && typeof entry === 'string') {
+          result.push({
+            entry: { path: entry },
+            sourcePath: path.posix.join(packageRoot, entry),
+          });
+        } else if (isRecord(entry) && typeof entry.path === 'string') {
           result.push({
             entry: entry as PageEntry,
             sourcePath: path.posix.join(packageRoot, entry.path),
@@ -83,9 +95,18 @@ function pageEntries(configuration: PagesConfiguration): PageReference[] {
   return result;
 }
 
-function referencedMauiTags(source: string): Set<string> {
+function referencedMauiTags(source: string, isRawMarkup = false): Set<string> {
   const tags = new Set<string>();
   const expression = /<\/?\s*(maui-[a-z][\w-]*)\b/gi;
+  if (isRawMarkup) {
+    const markup = source
+      .replace(/<!--[\s\S]*?-->/g, (comment) => comment.replace(/[^\r\n]/g, ' '))
+      .replace(/\/\*[\s\S]*?\*\//g, (comment) => comment.replace(/[^\r\n]/g, ' '));
+    for (const match of markup.matchAll(expression)) {
+      tags.add(match[1].toLowerCase());
+    }
+    return tags;
+  }
   const templates = source.matchAll(/<template\b[^>]*>([\s\S]*?)<\/template\s*>/gi);
   for (const template of templates) {
     const markup = template[1]
@@ -149,12 +170,13 @@ export function createMauiLibraryPlan(
     throw new Error('The MAUI target folder must be a non-empty relative path inside the project.');
   }
 
-  const pagesJsonPath = resolvePagesJson(projectRoot);
-  if (!pagesJsonPath) {
-    throw new Error('Could not find pages.json in the project root or src/.');
+  const projectConfig = resolveProjectConfig(projectRoot);
+  if (!projectConfig) {
+    throw new Error('Could not find pages.json (uni-app) or app.json (Pure Macle) in the project.');
   }
+  const pagesJsonPath = projectConfig.filePath;
   const configuration: unknown = JSON.parse(fs.readFileSync(pagesJsonPath, 'utf8'));
-  if (!isRecord(configuration)) throw new Error('pages.json must contain a JSON object.');
+  if (!isRecord(configuration)) throw new Error(`${path.basename(pagesJsonPath)} must contain a JSON object.`);
   const pagesConfiguration = configuration as PagesConfiguration;
   const configRoot = path.dirname(pagesJsonPath);
   const outputDirectory = path.resolve(projectRoot, normalizedTarget);
@@ -172,11 +194,19 @@ export function createMauiLibraryPlan(
   const missingEntries = new Set<string>();
   const updates: PageUpdate[] = [];
 
-  for (const page of pageEntries(pagesConfiguration)) {
-    const pageSourcePath = path.resolve(configRoot, `${page.sourcePath}.vue`);
-    if (!isWithin(projectRoot, pageSourcePath) || !fs.existsSync(pageSourcePath)) continue;
+  for (const page of pageEntries(pagesConfiguration, projectConfig.kind)) {
+    const pageSourcePath =
+      projectConfig.kind === 'pure-macle'
+        ? ['.maml', '.wxml']
+            .map((ext) => path.resolve(configRoot, `${page.sourcePath}${ext}`))
+            .find((candidate) => isWithin(projectRoot, candidate) && fs.existsSync(candidate))
+        : path.resolve(configRoot, `${page.sourcePath}.vue`);
+    if (!pageSourcePath || !isWithin(projectRoot, pageSourcePath) || !fs.existsSync(pageSourcePath)) continue;
 
-    const usedTags = referencedMauiTags(fs.readFileSync(pageSourcePath, 'utf8'));
+    const usedTags = referencedMauiTags(
+      fs.readFileSync(pageSourcePath, 'utf8'),
+      projectConfig.kind === 'pure-macle'
+    );
     if (usedTags.size === 0) continue;
 
     const registrations: Record<string, string> = {};
@@ -220,6 +250,7 @@ export function createMauiLibraryPlan(
   }
 
   return {
+    kind: projectConfig.kind,
     pagesJsonPath,
     outputDirectory,
     updates,
@@ -306,13 +337,50 @@ export function installMauiLibrary(
     path.basename(selected).toLowerCase() === 'dist' ? selected : path.join(selected, 'dist');
   const copied = copyMissingFiles(sourceDist, plan.outputDirectory, projectRoot);
 
+  const registrationConflicts = new Set<string>();
+  if (plan.kind === 'pure-macle') {
+    const configRoot = path.dirname(plan.pagesJsonPath);
+    for (const update of plan.updates) {
+      const pageJsonPath = path.resolve(configRoot, `${update.sourcePath}.json`);
+      if (!isWithin(projectRoot, pageJsonPath)) continue;
+      let pageJson: Record<string, unknown> = {};
+      if (fs.existsSync(pageJsonPath)) {
+        const parsed: unknown = JSON.parse(fs.readFileSync(pageJsonPath, 'utf8'));
+        if (!isRecord(parsed)) {
+          throw new Error(`${path.relative(projectRoot, pageJsonPath)} must contain a JSON object.`);
+        }
+        pageJson = parsed;
+      }
+      const usingComponents = isRecord(pageJson.usingComponents) ? pageJson.usingComponents : {};
+      let changed = false;
+      for (const [name, componentPath] of Object.entries(update.components)) {
+        if (usingComponents[name] === undefined) {
+          usingComponents[name] = componentPath;
+          changed = true;
+        } else if (usingComponents[name] !== componentPath) {
+          registrationConflicts.add(name);
+        }
+      }
+      if (changed) {
+        pageJson.usingComponents = usingComponents;
+        ensureDirectory(projectRoot, path.dirname(pageJsonPath));
+        writeJsonAtomically(pageJsonPath, pageJson);
+      }
+    }
+    return {
+      ...copied,
+      configuredPages: plan.updates.length,
+      missingEntries: plan.missingEntries,
+      registrationConflicts: [...registrationConflicts].sort(),
+    };
+  }
+
   const configuration: unknown = JSON.parse(fs.readFileSync(plan.pagesJsonPath, 'utf8'));
   if (!isRecord(configuration)) throw new Error('pages.json changed and is no longer a JSON object.');
 
   const updatesByPath = new Map(plan.updates.map((update) => [update.sourcePath, update]));
-  const registrationConflicts = new Set<string>();
   let configurationChanged = false;
-  for (const page of pageEntries(configuration as PagesConfiguration)) {
+  for (const page of pageEntries(configuration as PagesConfiguration, plan.kind)) {
     const update = updatesByPath.get(page.sourcePath);
     if (!update) continue;
     const entry = page.entry;

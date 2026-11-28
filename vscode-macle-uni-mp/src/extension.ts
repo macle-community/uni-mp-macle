@@ -2448,6 +2448,8 @@ function startCompiledOutputWatcher(
     pureMacleRebuildTimer = undefined;
   }
 
+  autoConfigureMauiIfNeeded(root, context);
+
   const { compileRoot, compileApp } = getMacleTargetPaths(root);
   let simulatorOpened = !openOnFirstBuild;
 
@@ -2515,6 +2517,8 @@ async function compilePureMacle(
     );
     return;
   }
+
+  autoConfigureMauiIfNeeded(root, context);
 
   const { compileRoot, compileApp } = getMacleTargetPaths(root);
   fs.mkdirSync(compileApp, { recursive: true });
@@ -2686,6 +2690,37 @@ async function startBuild(
     return;
   }
 
+  if (framework === 'taro-react') {
+    const taroOut = outputDirectory(preferredRoot);
+    const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+    outputChannel.show(true);
+    outputChannel.appendLine(`Starting Taro Macle build in ${preferredRoot}`);
+    outputChannel.appendLine(`Output: ${taroOut}`);
+
+    if (preview) {
+      startCompiledOutputWatcher(preferredRoot, taroOut, context, true);
+    }
+
+    const child = spawn(npmCmd, ['run', 'dev:macle'], {
+      cwd: preferredRoot,
+      env: { ...process.env, NODE_ENV: 'development' },
+      shell: process.platform === 'win32',
+    });
+    buildProcess = child;
+    child.stdout?.on('data', (data: Buffer) => outputChannel.append(data.toString()));
+    child.stderr?.on('data', (data: Buffer) => outputChannel.append(data.toString()));
+    child.on('error', (error) => {
+      if (buildProcess === child) buildProcess = undefined;
+      outputChannel.appendLine(`Could not start Taro build: ${error.message}`);
+      void vscode.window.showErrorMessage(`Could not start Taro build: ${error.message}`);
+    });
+    child.on('exit', (code) => {
+      outputChannel.appendLine(`Taro CLI exited with code ${code ?? 0}`);
+      if (buildProcess === child) buildProcess = undefined;
+    });
+    return;
+  }
+
   const workspaceRoots = vscode.workspace.workspaceFolders?.map((folder) => folder.uri.fsPath) ?? [];
   const savedRoot = context.workspaceState.get<string>('macle.uniAppProjectRoot');
   const candidateRoots = [
@@ -2732,6 +2767,7 @@ async function startBuild(
   await context.workspaceState.update('macle.uniAppProjectRoot', root);
   const configPath = configureProject(root);
   if (!configPath) return;
+  autoConfigureMauiIfNeeded(root, context);
 
   const mode = 'dev';
   const outputDir = path.resolve(root, `dist/${mode}/mp-macle`);
@@ -2782,6 +2818,8 @@ async function startBuild(
     return;
   }
 
+  autoConfigureMauiIfNeeded(root, context);
+
   const { compileRoot, compileApp } = getMacleTargetPaths(root);
   const compiled = await runMacleCompilerOnce(outputDir, compileApp, context);
   if (!compiled) {
@@ -2794,41 +2832,103 @@ async function startBuild(
   startCompiledOutputWatcher(root, outputDir, context, false);
 }
 
-async function configureMauiLibrary(context: vscode.ExtensionContext): Promise<void> {
-  const root = projectRoot();
-  if (!root) {
-    void vscode.window.showErrorMessage('Open a uni-app project folder before configuring the MAUI library.');
-    return;
+function resolveToolkitMauiDist(context: vscode.ExtensionContext): string | undefined {
+  const config = loadToolkitConfig(context);
+  const candidates: string[] = [];
+
+  const configuredLocalPath = vscode.workspace
+    .getConfiguration('macle.toolkit')
+    .get<string>('localPath', '')
+    .trim();
+  const savedLocalPath = context.globalState.get<string>('macle.toolkit.localPath')?.trim();
+  for (const rawBase of [configuredLocalPath, savedLocalPath]) {
+    if (!rawBase) continue;
+    const base = expandUserPath(rawBase);
+    candidates.push(path.join(base, config.toolkit.uiFolder, 'dist'));
+    candidates.push(path.join(base, 'dist'));
+    try {
+      for (const entry of fs.readdirSync(base, { withFileTypes: true })) {
+        if (entry.isDirectory() && /devsuite_ui/i.test(entry.name)) {
+          candidates.push(path.join(base, entry.name, 'dist'));
+        }
+      }
+    } catch {
+      // ignore unreadable localPath
+    }
   }
 
-  const lastLibraryFolder = context.workspaceState.get<string>('macle.maui.libraryFolder');
-  const selected = await vscode.window.showOpenDialog({
-    canSelectFiles: false,
-    canSelectFolders: true,
-    canSelectMany: false,
-    defaultUri: lastLibraryFolder ? vscode.Uri.file(lastLibraryFolder) : undefined,
-    openLabel: 'Select MAUI library folder',
-    title: 'Select a MAUI library folder containing dist/',
-  });
-  if (!selected?.[0]) return;
+  const storageToolkitRoot = path.join(
+    context.globalStorageUri.fsPath,
+    config.toolkit.storageFolder,
+    config.toolkit.version
+  );
+  candidates.push(path.join(storageToolkitRoot, config.toolkit.uiFolder, 'dist'));
+  candidates.push(path.join(storageToolkitRoot, config.toolkit.contentsFolder, config.toolkit.uiFolder, 'dist'));
+
+  for (const candidate of candidates) {
+    try {
+      if (fs.existsSync(candidate) && fs.statSync(candidate).isDirectory()) {
+        return candidate;
+      }
+    } catch {
+      // ignore
+    }
+  }
+  return undefined;
+}
+
+function autoConfigureMauiIfNeeded(root: string, context: vscode.ExtensionContext): void {
+  const toolkitDist = resolveToolkitMauiDist(context);
+  if (!toolkitDist) return;
 
   const targetFolder = vscode.workspace
     .getConfiguration('macle.maui')
     .get<string>('targetFolder', 'maui-components');
 
   try {
-    const plan = createMauiLibraryPlan(root, selected[0].fsPath, targetFolder);
-    const pageDescription =
-      plan.updates.length === 1 ? '1 page' : `${plan.updates.length} pages`;
-    const confirmation = await vscode.window.showWarningMessage(
-      `Copy MAUI dist files into ${path.relative(root, plan.outputDirectory) || '.'} and add component registrations to ${pageDescription} in ${path.relative(root, plan.pagesJsonPath)}? Existing files and registrations will be preserved.`,
-      { modal: true },
-      'Copy and Configure'
-    );
-    if (confirmation !== 'Copy and Configure') return;
+    const plan = createMauiLibraryPlan(root, toolkitDist, targetFolder);
+    if (plan.updates.length === 0) return;
 
-    const result = installMauiLibrary(root, selected[0].fsPath, targetFolder);
-    await context.workspaceState.update('macle.maui.libraryFolder', selected[0].fsPath);
+    const result = installMauiLibrary(root, toolkitDist, targetFolder);
+    if (result.copiedFiles > 0 || result.configuredPages > 0) {
+      outputChannel.appendLine(
+        `[MAUI] Auto-configured MAUI library from ${toolkitDist}: copied ${result.copiedFiles} file(s), configured ${result.configuredPages} page(s).`
+      );
+    }
+  } catch {
+    // Non-fatal during automatic pre-build check
+  }
+}
+
+async function configureMauiLibrary(context: vscode.ExtensionContext): Promise<void> {
+  const root = projectRoot();
+  if (!root) {
+    void vscode.window.showErrorMessage('Open a Macle or uni-app project folder before configuring the MAUI library.');
+    return;
+  }
+
+  let libraryFolder = resolveToolkitMauiDist(context);
+  if (!libraryFolder) {
+    const lastLibraryFolder = context.workspaceState.get<string>('macle.maui.libraryFolder');
+    const selected = await vscode.window.showOpenDialog({
+      canSelectFiles: false,
+      canSelectFolders: true,
+      canSelectMany: false,
+      defaultUri: lastLibraryFolder ? vscode.Uri.file(lastLibraryFolder) : undefined,
+      openLabel: 'Select MAUI library folder',
+      title: 'Select a MAUI library folder containing dist/',
+    });
+    if (!selected?.[0]) return;
+    libraryFolder = selected[0].fsPath;
+  }
+
+  const targetFolder = vscode.workspace
+    .getConfiguration('macle.maui')
+    .get<string>('targetFolder', 'maui-components');
+
+  try {
+    const result = installMauiLibrary(root, libraryFolder, targetFolder);
+    await context.workspaceState.update('macle.maui.libraryFolder', libraryFolder);
 
     const summary = [
       `Copied ${result.copiedFiles} file(s).`,
@@ -2865,6 +2965,9 @@ async function configureMauiLibrary(context: vscode.ExtensionContext): Promise<v
 }
 
 function outputDirectory(root: string): string {
+  if (detectProjectFramework(root) === 'taro-react') {
+    return path.resolve(root, 'dist');
+  }
   return path.resolve(root, 'dist/dev/mp-macle');
 }
 
@@ -3023,7 +3126,7 @@ export function activate(context: vscode.ExtensionContext): void {
     const targetPaths = getMacleTargetPaths(root);
     const outputDir = fs.existsSync(targetPaths.debugApp)
       ? targetPaths.debugApp
-      : path.resolve(root, 'dist/dev/mp-macle');
+      : outputDirectory(root);
     await openWebSimulator(outputDir, context);
   });
   const statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 20);
@@ -3049,16 +3152,51 @@ export function activate(context: vscode.ExtensionContext): void {
     }
   }
 
+  const resolveH5SimulatorDebugConfig = {
+    resolveDebugConfigurationWithSubstitutedVariables(
+      _folder: vscode.WorkspaceFolder | undefined,
+      debugConfiguration: vscode.DebugConfiguration
+    ): vscode.DebugConfiguration | undefined {
+      const openIn = vscode.workspace.getConfiguration('macle').get<string>('simulator.openIn', 'vscode');
+      if (
+        openIn === 'vscode' &&
+        typeof debugConfiguration.name === 'string' &&
+        debugConfiguration.name.includes('Macle') &&
+        typeof debugConfiguration.url === 'string'
+      ) {
+        openSimulatorInsideVscode(debugConfiguration.url, context);
+        // Cancel external Chrome launch so the H5 simulator stays inside VS Code's Webview panel.
+        return undefined;
+      }
+      return debugConfiguration;
+    },
+  };
+  const pwaChromeProvider = vscode.debug.registerDebugConfigurationProvider(
+    'pwa-chrome',
+    resolveH5SimulatorDebugConfig
+  );
+  const chromeProvider = vscode.debug.registerDebugConfigurationProvider(
+    'chrome',
+    resolveH5SimulatorDebugConfig
+  );
+
   const debugSessionListener = vscode.debug.onDidStartDebugSession((session) => {
-    if (session.name.includes('Macle')) {
-      const root = projectRoot();
-      if (root) {
-        ensureUniMaclePluginInjected(root);
-        if (detectProjectFramework(root) === 'pure-macle') {
-          startPureMacleWatcher(root, context);
-        } else {
-          startCompiledOutputWatcher(root, outputDirectory(root), context, true);
-        }
+    if (!session.name.includes('Macle')) return;
+    if (session.type === 'pwa-chrome') {
+      const openIn = vscode.workspace.getConfiguration('macle').get<string>('simulator.openIn', 'vscode');
+      const url = typeof session.configuration?.url === 'string' ? session.configuration.url : undefined;
+      if (openIn === 'vscode' && url) {
+        openSimulatorInsideVscode(url, context);
+      }
+      return;
+    }
+    const root = projectRoot();
+    if (root) {
+      ensureUniMaclePluginInjected(root);
+      if (detectProjectFramework(root) === 'pure-macle') {
+        startPureMacleWatcher(root, context);
+      } else {
+        startCompiledOutputWatcher(root, outputDirectory(root), context, true);
       }
     }
   });
@@ -3080,6 +3218,8 @@ export function activate(context: vscode.ExtensionContext): void {
     compileRelease,
     openWebSimulatorCommand,
     startWatcherCommand,
+    pwaChromeProvider,
+    chromeProvider,
     debugSessionListener,
     taskListener,
     openReport,
